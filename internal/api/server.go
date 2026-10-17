@@ -50,6 +50,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/stats/overview", s.handleOverview)
 	mux.HandleFunc("GET /api/stats/models/{id...}", s.handleModelDetail)
 	mux.HandleFunc("GET /api/eval/summary", s.handleQuality)
+	mux.HandleFunc("GET /api/eval/confusion", s.handleConfusion)
+	mux.HandleFunc("POST /api/eval/judge-run", s.handleJudgeRun)
 	mux.HandleFunc("POST /api/eval/export-finetune", s.handleExportFinetune)
 	if s.UI != nil {
 		mux.Handle("GET /{$}", s.UI)
@@ -142,6 +144,28 @@ func (s *Server) handleExportFinetune(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"path": path, "rows": n})
+}
+
+func (s *Server) handleConfusion(w http.ResponseWriter, r *http.Request) {
+	c, err := eval.ConfusionMatrix(s.DB, time.Now().Add(-30*24*time.Hour).UnixMilli())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, c)
+}
+
+func (s *Server) handleJudgeRun(w http.ResponseWriter, r *http.Request) {
+	st := s.Settings.Get()
+	n, err := eval.RunOnce(r.Context(), s.DB, eval.JudgeConfig{
+		BaseURL: st.NimbleBaseURL,
+		Model:   st.NimbleModel,
+	}, 25)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"judged": n})
 }
 
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {

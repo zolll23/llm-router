@@ -11,6 +11,7 @@ import (
 
 	"router/internal/api"
 	"router/internal/config"
+	"router/internal/eval"
 	"router/internal/provider"
 	"router/internal/router"
 	"router/internal/store"
@@ -60,6 +61,12 @@ func main() {
 	defer cancel()
 	_ = reg.Sync(ctx)
 	reg.StartPeriodicSync(ctx, 60*time.Second)
+
+	stNow := settings.Get()
+	eval.StartScheduler(ctx, db, eval.JudgeConfig{
+		BaseURL: stNow.NimbleBaseURL,
+		Model:   stNow.NimbleModel,
+	}, 6*time.Hour)
 
 	ttl := time.Duration(settings.Get().StickyTTLMinutes) * time.Minute
 	ui, err := api.UIHandler()

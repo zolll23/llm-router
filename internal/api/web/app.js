@@ -67,7 +67,9 @@ async function loadDetail(id) {
 
 async function loadQuality() {
   const q = await fetch("/api/eval/summary").then((r) => r.json());
-  document.getElementById("quality-box").textContent = JSON.stringify(q, null, 2);
+  const c = await fetch("/api/eval/confusion").then((r) => r.json());
+  document.getElementById("quality-box").textContent =
+    JSON.stringify({ summary: q, confusion: c }, null, 2);
 }
 
 async function loadSettings() {
@@ -100,6 +102,12 @@ document.getElementById("settings-form").addEventListener("submit", async (e) =>
 document.getElementById("sync-btn").addEventListener("click", async () => {
   await fetch("/api/inventory/sync", { method: "POST" });
   await loadSettings();
+});
+
+document.getElementById("judge-btn").addEventListener("click", async () => {
+  const r = await fetch("/api/eval/judge-run", { method: "POST" }).then((x) => x.json());
+  alert("Judged: " + (r.judged ?? 0));
+  await loadQuality();
 });
 
 loadOverview();
