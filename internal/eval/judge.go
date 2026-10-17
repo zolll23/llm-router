@@ -45,9 +45,13 @@ func RunOnce(ctx context.Context, db *store.DB, cfg JudgeConfig, limit int) (int
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = "http://127.0.0.1:11434"
 	}
+	type pending struct {
+		reqID, state, pred, chosen, tier string
+		escalated                        int
+	}
 	rows, err := db.SQL.Query(`
 SELECT r.request_id, COALESCE(r.state_text,''), COALESCE(r.pred_complexity,''), COALESCE(r.chosen_model,''), COALESCE(r.cost_tier,''),
-       COALESCE(r.escalated,0), COALESCE(r.pred_confidence,0)
+       COALESCE(r.escalated,0)
 FROM routing_events r
 LEFT JOIN judge_labels j ON j.request_id = r.request_id
 WHERE j.request_id IS NULL AND r.request_id IS NOT NULL AND r.request_id != ''
@@ -56,29 +60,36 @@ LIMIT ?`, limit)
 	if err != nil {
 		return 0, err
 	}
-	defer rows.Close()
+	var batch []pending
+	for rows.Next() {
+		var p pending
+		if err := rows.Scan(&p.reqID, &p.state, &p.pred, &p.chosen, &p.tier, &p.escalated); err != nil {
+			_ = rows.Close()
+			return 0, err
+		}
+		batch = append(batch, p)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, err
+	}
+	_ = rows.Close()
 
 	n := 0
-	for rows.Next() {
-		var reqID, state, pred, chosen, tier string
-		var escalated int
-		var conf float64
-		if err := rows.Scan(&reqID, &state, &pred, &chosen, &tier, &escalated, &conf); err != nil {
-			return n, err
-		}
-		gold, under, over, jconf, err := cfg.judge(ctx, state, pred, chosen, tier, escalated == 1)
+	for _, p := range batch {
+		gold, under, over, jconf, err := cfg.judge(ctx, p.state, p.pred, p.chosen, p.tier, p.escalated == 1)
 		if err != nil {
 			continue
 		}
 		_, err = db.SQL.Exec(`
 INSERT OR REPLACE INTO judge_labels(request_id, gold_complexity, underkill, overkill, judge_confidence, judge_model, judged_at)
-VALUES(?,?,?,?,?,?,?)`, reqID, gold, boolInt(under), boolInt(over), jconf, cfg.Model, time.Now().UnixMilli())
+VALUES(?,?,?,?,?,?,?)`, p.reqID, gold, boolInt(under), boolInt(over), jconf, cfg.Model, time.Now().UnixMilli())
 		if err != nil {
 			return n, err
 		}
 		n++
 	}
-	return n, rows.Err()
+	return n, nil
 }
 
 func boolInt(v bool) int {
