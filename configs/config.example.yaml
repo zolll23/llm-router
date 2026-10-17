@@ -1,0 +1,9 @@
+listen: "127.0.0.1:8080"
+virtual_model: auto
+data_dir: "~/.local/share/router"
+# admin_token / api_token required when listen is not loopback
+
+providers:
+  - id: ollama
+    type: ollama
+    base_url: "http://127.0.0.1:11434"
