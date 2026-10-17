@@ -29,6 +29,9 @@ type RoutingSettings struct {
 	LocalQueueMax            int
 	LocalQueueRedirect       bool
 	AgentMinParams           int
+	RepairWeakToolCalls      bool
+	RepairWeakRetryStrong    bool
+	LocalAllowlist           map[string][]string
 }
 
 type Deps struct {
@@ -198,19 +201,70 @@ func ProxyChat(ctx context.Context, d Deps, body []byte, hdr http.Header) (*Chat
 		}
 		return provider.EvalAgentOK(m, minParams, ov).OK
 	}
+	// When repairing weak tool-calls, allow non-agent_ok models except manual deny.
+	gateOK := agentOK
+	if rs.RepairWeakToolCalls {
+		gateOK = func(m provider.ModelInfo) bool {
+			ov := provider.OverrideAuto
+			if d.Overrides != nil {
+				ov = d.Overrides.Get(m.ID())
+			}
+			return ov != provider.OverrideDeny
+		}
+	}
 
-	dec, err := router.Decide(ctx, router.DecideInput{
-		Class:       class,
-		Models:      d.Reg.Models(),
-		SessionKey:  session,
-		Sticky:      d.Sticky,
-		ForceTier:   force,
-		EscalateMin: rs.EscalateMin,
-		ExternalOK:  extOK,
-		AgentOK:     agentOK,
-	})
+	localAllow := router.AllowlistForCategory(rs.LocalAllowlist, class.Category)
+	localLoaded := func(m provider.ModelInfo) bool {
+		if m.CostTier != "local" || d.Schedulers == nil {
+			return true
+		}
+		sched := d.Schedulers.Get(m.ProviderID)
+		if sched == nil {
+			return true
+		}
+		return sched.IsLoaded(ctx, m.UpstreamID)
+	}
+	mkDecide := func(escalateMin string, requireLoaded bool) router.DecideInput {
+		in := router.DecideInput{
+			Class:       class,
+			Models:      d.Reg.Models(),
+			SessionKey:  session,
+			Sticky:      d.Sticky,
+			ForceTier:   force,
+			EscalateMin: escalateMin,
+			ExternalOK:  extOK,
+			AgentOK:     gateOK,
+			LocalAllow:  localAllow,
+		}
+		if requireLoaded && len(localAllow) > 0 {
+			in.LocalLoaded = localLoaded
+		}
+		return in
+	}
+
+	dec, err := router.Decide(ctx, mkDecide(rs.EscalateMin, true))
+	if err != nil && len(localAllow) > 0 {
+		// No loaded allowlist local (+ maybe no cloud): last resort cold allowlist.
+		dec, err = router.Decide(ctx, mkDecide(rs.EscalateMin, false))
+		if err == nil {
+			dec.Reason = "allowlist_cold_fallback"
+		}
+	}
 	if err != nil && class.NeedsTools && anyExtOK() {
-		dec, err = router.Decide(ctx, router.DecideInput{
+		dec, err = router.Decide(ctx, mkDecide("trivial", true))
+		if err != nil && len(localAllow) > 0 {
+			dec, err = router.Decide(ctx, mkDecide("trivial", false))
+		}
+		if err == nil && !strings.HasPrefix(dec.Reason, "allowlist_") {
+			dec.Reason = "no_local_agent_ok_redirect"
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	if len(localAllow) > 0 && dec.Model.CostTier == "local" && !localLoaded(dec.Model) && anyExtOK() {
+		// Safety: never cold-load when allowlist mode if cloud exists.
+		if cloudDec, eerr := router.Decide(ctx, router.DecideInput{
 			Class:       class,
 			Models:      d.Reg.Models(),
 			SessionKey:  session,
@@ -218,14 +272,12 @@ func ProxyChat(ctx context.Context, d Deps, body []byte, hdr http.Header) (*Chat
 			ForceTier:   force,
 			EscalateMin: "trivial",
 			ExternalOK:  extOK,
-			AgentOK:     agentOK,
-		})
-		if err == nil {
-			dec.Reason = "no_local_agent_ok_redirect"
+			AgentOK:     gateOK,
+			NoLocal:     true,
+		}); eerr == nil && cloudDec.Model.CostTier == "metered" {
+			dec = cloudDec
+			dec.Reason = "allowlist_not_loaded_cloud"
 		}
-	}
-	if err != nil {
-		return nil, err
 	}
 
 	var queueWait int64
@@ -247,7 +299,7 @@ func ProxyChat(ctx context.Context, d Deps, body []byte, hdr http.Header) (*Chat
 						ForceTier:   force,
 						EscalateMin: "trivial",
 						ExternalOK:  extOK,
-						AgentOK:     agentOK,
+						AgentOK:     gateOK,
 					})
 					if eerr == nil && extDec.Model.CostTier == "metered" {
 						dec = extDec
@@ -270,7 +322,13 @@ func ProxyChat(ctx context.Context, d Deps, body []byte, hdr http.Header) (*Chat
 		}
 	}
 
-	resp, model, dec, err := forwardChat(ctx, d, body, hdr, dec, rs.KeepAlive)
+	wantStream := meta.Stream
+	reqBody := body
+	if rs.RepairWeakToolCalls && class.NeedsTools && !agentOK(dec.Model) {
+		reqBody = forceStreamFalse(body)
+	}
+
+	resp, model, dec, err := forwardChat(ctx, d, reqBody, hdr, dec, rs.KeepAlive)
 	if err != nil {
 		if release != nil {
 			release()
@@ -295,7 +353,7 @@ func ProxyChat(ctx context.Context, d Deps, body []byte, hdr http.Header) (*Chat
 			EscalateMin: rs.EscalateMin,
 			LocalOnly:   true,
 			ExternalOK:  func(string) bool { return false },
-			AgentOK:     agentOK,
+			AgentOK:     gateOK,
 		})
 		if lerr == nil {
 			if release != nil {
@@ -314,10 +372,98 @@ func ProxyChat(ctx context.Context, d Deps, body []byte, hdr http.Header) (*Chat
 					release = rel
 				}
 			}
-			resp2, model2, dec2, err2 := forwardChat(ctx, d, body, hdr, localDec, rs.KeepAlive)
+			retryBody := body
+			if rs.RepairWeakToolCalls && class.NeedsTools && !agentOK(localDec.Model) {
+				retryBody = forceStreamFalse(body)
+			}
+			resp2, model2, dec2, err2 := forwardChat(ctx, d, retryBody, hdr, localDec, rs.KeepAlive)
 			if err2 == nil {
 				resp, model, dec = resp2, model2, dec2
 				reason = dec.Reason
+			}
+		}
+	}
+
+	// Repair fake tool JSON in content for any model when tools were requested.
+	// Weak models: if repair fails, optionally retry once on agent_ok, then repair again.
+	if rs.RepairWeakToolCalls && class.NeedsTools && resp != nil && resp.StatusCode < 400 {
+		raw, rerr := readAllBody(resp)
+		if rerr == nil {
+			jsonBody := raw
+			ct := resp.Header.Get("Content-Type")
+			if strings.Contains(ct, "event-stream") || bytes.HasPrefix(bytes.TrimSpace(raw), []byte("data:")) {
+				jsonBody = assembleChatJSONFromSSE(raw)
+			}
+			respondJSON := func(payload []byte) *http.Response {
+				if wantStream {
+					return jsonBodyResponse(200, chatJSONToSSE(payload), "text/event-stream")
+				}
+				return jsonBodyResponse(200, payload, "application/json")
+			}
+			allowed := toolNamesFromRequest(body)
+			applyRepair := func(src []byte) ([]byte, bool) {
+				return RepairToolCallsInChatJSON(src, allowed)
+			}
+			if repaired, ok := applyRepair(jsonBody); ok {
+				reason = "tool_repair"
+				resp = respondJSON(repaired)
+			} else if rs.RepairWeakRetryStrong && !agentOK(model) {
+				if release != nil {
+					release()
+					release = nil
+				}
+				strongDec, serr := router.Decide(ctx, router.DecideInput{
+					Class:       class,
+					Models:      d.Reg.Models(),
+					SessionKey:  session,
+					Sticky:      d.Sticky,
+					ForceTier:   force,
+					EscalateMin: rs.EscalateMin,
+					ExternalOK:  extOK,
+					AgentOK:     agentOK,
+				})
+				if serr == nil && agentOK(strongDec.Model) {
+					if strongDec.Model.CostTier == "local" && d.Schedulers != nil {
+						if sched := d.Schedulers.Get(strongDec.Model.ProviderID); sched != nil {
+							need := scheduler.EstimateNeedGB(strongDec.Model.UpstreamID, strongDec.Model.Params)
+							waitMS, rel, aerr := sched.Acquire(ctx, strongDec.Model.UpstreamID, need, rs.LocalQueueMax)
+							if aerr == nil {
+								queueWait += waitMS
+								release = rel
+							}
+						}
+					}
+					resp2, model2, dec2, err2 := forwardChat(ctx, d, body, hdr, strongDec, rs.KeepAlive)
+					if err2 == nil {
+						resp, model, dec = resp2, model2, dec2
+						reason = "tool_repair_retry_strong"
+						raw2, rerr2 := readAllBody(resp)
+						if rerr2 == nil {
+							json2 := raw2
+							ct2 := resp.Header.Get("Content-Type")
+							if strings.Contains(ct2, "event-stream") || bytes.HasPrefix(bytes.TrimSpace(raw2), []byte("data:")) {
+								json2 = assembleChatJSONFromSSE(raw2)
+							}
+							if repaired2, ok2 := applyRepair(json2); ok2 {
+								reason = "tool_repair_after_strong"
+								resp = respondJSON(repaired2)
+							} else {
+								resp = respondJSON(json2)
+							}
+						}
+					} else {
+						resp = respondJSON(jsonBody)
+					}
+				} else {
+					resp = respondJSON(jsonBody)
+				}
+			} else {
+				// Re-wrap body we consumed (stream or json) so client still gets a response.
+				if wantStream && (strings.Contains(ct, "event-stream") || bytes.HasPrefix(bytes.TrimSpace(raw), []byte("data:"))) {
+					resp = jsonBodyResponse(200, raw, "text/event-stream")
+				} else {
+					resp = respondJSON(jsonBody)
+				}
 			}
 		}
 	}

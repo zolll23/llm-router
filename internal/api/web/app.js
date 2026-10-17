@@ -62,7 +62,12 @@ function activateTab(tab, { push = false } = {}) {
   if (tab === "usage") {
     loadSankey();
     loadOverview();
-  } else if (tab === "quality") {
+    loadLiveStats();
+    startLivePoll();
+  } else {
+    stopLivePoll();
+  }
+  if (tab === "quality") {
     loadQuality();
   } else if (tab === "models") {
     loadModelsPage();
@@ -103,6 +108,14 @@ let chartComplexity = null;
 let chartByCategory = [];
 let modelInfoModal = null;
 let lastRecPayload = null;
+const liveCharts = {};
+let livePollTimer = null;
+
+const LIVE_PROVIDERS = [
+  { id: "ollama", req: "chart-req-ollama", lat: "chart-lat-ollama", aliases: ["ollama"] },
+  { id: "ollama-cloud", req: "chart-req-ollama-cloud", lat: "chart-lat-ollama-cloud", aliases: ["ollama-cloud", "ollama_cloud"] },
+  { id: "opencode-go", req: "chart-req-opencode", lat: "chart-lat-opencode", aliases: ["opencode-go", "opencode"] },
+];
 
 function esc(s) {
   return String(s ?? "")
@@ -592,6 +605,168 @@ async function loadRecs() {
 document.getElementById("rec-btn").addEventListener("click", loadRecs);
 document.getElementById("rec-fill-btn").addEventListener("click", fillMyHardware);
 
+function startLivePoll() {
+  stopLivePoll();
+  livePollTimer = setInterval(() => {
+    if (document.getElementById("usage")?.classList.contains("active")) {
+      loadLiveStats().catch(() => {});
+    }
+  }, 30000);
+}
+
+function stopLivePoll() {
+  if (livePollTimer) {
+    clearInterval(livePollTimer);
+    livePollTimer = null;
+  }
+}
+
+function destroyLiveChart(key) {
+  if (liveCharts[key]) {
+    liveCharts[key].destroy();
+    delete liveCharts[key];
+  }
+}
+
+function upsertLineChart(key, canvasId, labels, values, color) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas || typeof Chart === "undefined") return;
+  destroyLiveChart(key);
+  liveCharts[key] = new Chart(canvas, {
+    type: "line",
+    data: {
+      labels,
+      datasets: [{
+        data: values,
+        borderColor: color,
+        backgroundColor: color + "33",
+        fill: true,
+        tension: 0.25,
+        pointRadius: 0,
+        borderWidth: 2,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: {
+          ticks: { maxTicksLimit: 6, font: { family: "Outfit", size: 10 } },
+          grid: { display: false },
+        },
+        y: {
+          beginAtZero: true,
+          ticks: { precision: 0, font: { family: "Outfit", size: 10 } },
+          grid: { color: "rgba(0,0,0,0.06)" },
+        },
+      },
+    },
+  });
+}
+
+function upsertBarChart(key, canvasId, labels, values, colors) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas || typeof Chart === "undefined") return;
+  destroyLiveChart(key);
+  liveCharts[key] = new Chart(canvas, {
+    type: "bar",
+    data: {
+      labels,
+      datasets: [{
+        data: values,
+        backgroundColor: colors,
+        borderWidth: 0,
+        borderRadius: 4,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { font: { family: "Outfit", size: 11 } }, grid: { display: false } },
+        y: {
+          beginAtZero: true,
+          ticks: { font: { family: "Outfit", size: 10 } },
+          grid: { color: "rgba(0,0,0,0.06)" },
+        },
+      },
+    },
+  });
+}
+
+function fillMinuteLabels(series, minutes = 15) {
+  const now = Date.now();
+  const start = now - minutes * 60_000;
+  const byTs = new Map();
+  for (const p of series || []) {
+    byTs.set(Number(p.ts), Number(p.req ?? p.waiting ?? 0));
+  }
+  const labels = [];
+  const values = [];
+  for (let t = Math.floor(start / 60_000) * 60_000; t <= now; t += 60_000) {
+    const d = new Date(t);
+    labels.push(`${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`);
+    values.push(byTs.get(t) || 0);
+  }
+  return { labels, values };
+}
+
+function findProvider(providers, slot) {
+  const list = providers || [];
+  for (const a of slot.aliases) {
+    const hit = list.find((p) => (p.provider_id || "") === a);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+async function loadLiveStats() {
+  const data = await api("/api/stats/live?minutes=15");
+  const providers = data.providers || [];
+  const colors = { ollama: "#0f6b4c", "ollama-cloud": "#2a7cb8", "opencode-go": "#c47a2c" };
+
+  for (const slot of LIVE_PROVIDERS) {
+    const p = findProvider(providers, slot);
+    const series = fillMinuteLabels(p?.series || [], 15);
+    upsertLineChart(`req-${slot.id}`, slot.req, series.labels, series.values, colors[slot.id] || "#0f6b4c");
+    const lat = p?.latency || {};
+    upsertBarChart(
+      `lat-${slot.id}`,
+      slot.lat,
+      ["p50", "p75", "p90"],
+      [Number(lat.p50 || 0), Number(lat.p75 || 0), Number(lat.p90 || 0)],
+      ["#0f6b4c", "#2a7cb8", "#c47a2c"],
+    );
+  }
+
+  const q = data.queue || {};
+  const waitingEl = document.getElementById("queue-waiting");
+  if (waitingEl) waitingEl.textContent = String(q.waiting ?? 0);
+
+  const qFilled = fillMinuteLabels(
+    (q.series || []).map((p) => ({ ts: p.ts, req: p.waiting })),
+    15,
+  );
+  upsertLineChart("queue", "chart-queue", qFilled.labels, qFilled.values, "#8b5bb0");
+
+  const modelsWrap = document.getElementById("queue-models");
+  if (modelsWrap) {
+    const rows = q.waiting_models || [];
+    if (!rows.length) {
+      modelsWrap.innerHTML = `<p class="text-muted mb-0">Пусто</p>`;
+    } else {
+      let html = `<table><thead><tr><th>Модель</th><th>Задач</th></tr></thead><tbody>`;
+      for (const r of rows) {
+        html += `<tr><td>${esc(r.model)}</td><td>${esc(r.n)}</td></tr>`;
+      }
+      html += `</tbody></table>`;
+      modelsWrap.innerHTML = html;
+    }
+  }
+}
+
 async function loadOverview() {
   const ov = await api("/api/stats/overview");
   const byId = {};
@@ -790,8 +965,61 @@ async function loadSettings() {
   form.local_queue_max.value = st.local_queue_max ?? 8;
   form.local_queue_redirect.checked = !!st.local_queue_redirect;
   form.agent_min_params.value = st.agent_min_params ?? 14;
+  form.repair_weak_tool_calls.checked = st.repair_weak_tool_calls !== false;
+  form.repair_weak_retry_strong.checked = st.repair_weak_retry_strong !== false;
+  await renderLocalAllowlist(st.local_allowlist || {});
   const inv = await api("/api/inventory");
   document.getElementById("inventory").textContent = JSON.stringify(inv, null, 2);
+}
+
+const ALLOWLIST_CATS = [
+  { id: "coding", title: "coding" },
+  { id: "reasoning", title: "reasoning" },
+  { id: "chat", title: "chat" },
+  { id: "creative", title: "creative" },
+];
+
+async function renderLocalAllowlist(lists) {
+  const wrap = document.getElementById("local-allowlist");
+  if (!wrap) return;
+  let models = [];
+  try {
+    const rich = await api("/api/models");
+    models = (rich.models || []).filter((m) => (m.cost_tier || m.CostTier) === "local");
+  } catch (_) {
+    models = [];
+  }
+  if (!models.length) {
+    wrap.innerHTML = `<p class="text-muted mb-0">Нет локальных моделей в inventory — Sync now</p>`;
+    return;
+  }
+  let html = "";
+  for (const cat of ALLOWLIST_CATS) {
+    const selected = new Set(lists[cat.id] || []);
+    html += `<div class="allowlist-cat mb-3"><div class="fw-semibold mb-1">${esc(cat.title)}</div><div class="allowlist-grid">`;
+    for (const m of models) {
+      const id = m.id;
+      const cid = `al-${cat.id}-${id.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+      html += `<div class="form-check">
+        <input class="form-check-input allowlist-cb" type="checkbox" id="${esc(cid)}" data-cat="${esc(cat.id)}" data-model="${esc(id)}"${selected.has(id) ? " checked" : ""} />
+        <label class="form-check-label" for="${esc(cid)}">${esc(id)}</label>
+      </div>`;
+    }
+    html += `</div></div>`;
+  }
+  wrap.innerHTML = html;
+}
+
+function collectLocalAllowlist(formRoot) {
+  const out = {};
+  formRoot.querySelectorAll(".allowlist-cb").forEach((cb) => {
+    if (!cb.checked) return;
+    const cat = cb.dataset.cat;
+    const id = cb.dataset.model;
+    if (!out[cat]) out[cat] = [];
+    out[cat].push(id);
+  });
+  return out;
 }
 
 document.getElementById("settings-form").addEventListener("submit", async (e) => {
@@ -813,6 +1041,9 @@ document.getElementById("settings-form").addEventListener("submit", async (e) =>
     local_queue_max: Number(f.local_queue_max.value ?? 8),
     local_queue_redirect: !!f.local_queue_redirect.checked,
     agent_min_params: Number(f.agent_min_params.value || 14),
+    repair_weak_tool_calls: !!f.repair_weak_tool_calls.checked,
+    repair_weak_retry_strong: !!f.repair_weak_retry_strong.checked,
+    local_allowlist: collectLocalAllowlist(f),
   };
   await api("/api/settings", { method: "PUT", body: JSON.stringify(body) });
   await loadSettings();

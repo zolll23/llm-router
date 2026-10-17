@@ -155,6 +155,61 @@ body {
   overflow-x: auto;
 }
 
+.live-panel {
+  height: 100%;
+  padding: 0.85rem 1rem;
+}
+
+.chart-box-sm {
+  height: 140px;
+}
+
+.live-queue-count {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  text-align: center;
+  min-height: 180px;
+}
+
+.queue-waiting-num {
+  font-family: var(--font-display, Syne, sans-serif);
+  font-size: clamp(2.8rem, 6vw, 4rem);
+  font-weight: 800;
+  line-height: 1;
+  color: var(--accent);
+  letter-spacing: -0.03em;
+}
+
+.queue-models-wrap {
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.queue-models-wrap table {
+  width: 100%;
+  font-size: 0.88rem;
+}
+
+.queue-models-wrap th,
+.queue-models-wrap td {
+  padding: 0.35rem 0.4rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.allowlist-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 0.25rem 0.75rem;
+}
+
+.allowlist-cat {
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.45);
+}
+
 #sankey { display: block; width: 100%; }
 
 .sankey-label {

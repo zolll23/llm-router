@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -101,6 +102,63 @@ func (s *Local) WaitingLen() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.waiters)
+}
+
+// IsLoaded reports whether upstreamID appears in the current Ollama /api/ps set.
+func (s *Local) IsLoaded(ctx context.Context, upstreamID string) bool {
+	if s == nil {
+		return false
+	}
+	ps := s.safePS(ctx)
+	key := norm(upstreamID)
+	if _, ok := ps[key]; ok {
+		return true
+	}
+	for name := range ps {
+		if provider.ModelNameMatch(name, key) {
+			return true
+		}
+	}
+	return false
+}
+
+// QueueModelCount is one model row in a queue snapshot.
+type QueueModelCount struct {
+	Model string `json:"model"`
+	N     int    `json:"n"`
+}
+
+// QueueSnapshot is a point-in-time view of the local scheduler.
+type QueueSnapshot struct {
+	Waiting       int               `json:"waiting"`
+	InFlight      []string          `json:"in_flight"`
+	WaitingModels []QueueModelCount `json:"waiting_models"`
+	BudgetGB      float64           `json:"budget_gb"`
+}
+
+// Snapshot returns waiting / in-flight models for UI metrics.
+func (s *Local) Snapshot() QueueSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := QueueSnapshot{
+		Waiting:  len(s.waiters),
+		BudgetGB: s.budgetGB,
+	}
+	counts := map[string]int{}
+	for _, w := range s.waiters {
+		counts[w.key]++
+	}
+	for model, n := range counts {
+		out.WaitingModels = append(out.WaitingModels, QueueModelCount{Model: model, N: n})
+	}
+	sortQueueModels(out.WaitingModels)
+	for model, n := range s.inFlight {
+		if n > 0 {
+			out.InFlight = append(out.InFlight, model)
+		}
+	}
+	sort.Strings(out.InFlight)
+	return out
 }
 
 // Acquire blocks until the model can run, or returns ErrOverflow / ctx error.
@@ -275,4 +333,13 @@ func norm(s string) string {
 		s = s[:i]
 	}
 	return s
+}
+
+func sortQueueModels(ms []QueueModelCount) {
+	sort.Slice(ms, func(i, j int) bool {
+		if ms[i].N != ms[j].N {
+			return ms[i].N > ms[j].N
+		}
+		return ms[i].Model < ms[j].Model
+	})
 }

@@ -36,6 +36,73 @@
         <svg id="sankey" role="img" aria-label="Sankey diagram"></svg>
         <p id="sankey-empty" class="text-muted mb-0" hidden>Пока нет запросов за период</p>
       </div>
+
+      <h2 class="section-title">Провайдеры · 15 мин</h2>
+      <p class="text-muted mb-3">Запросы и latency (p50 / p75 / p90) по провайдерам, очередь локальной Ollama.</p>
+      <div class="row g-3 mb-3">
+        <div class="col-md-4">
+          <div class="panel chart-panel live-panel">
+            <h3 class="section-subtitle">Local Ollama · запросы</h3>
+            <div class="chart-box chart-box-sm"><canvas id="chart-req-ollama"></canvas></div>
+          </div>
+        </div>
+        <div class="col-md-4">
+          <div class="panel chart-panel live-panel">
+            <h3 class="section-subtitle">Ollama Cloud · запросы</h3>
+            <div class="chart-box chart-box-sm"><canvas id="chart-req-ollama-cloud"></canvas></div>
+          </div>
+        </div>
+        <div class="col-md-4">
+          <div class="panel chart-panel live-panel">
+            <h3 class="section-subtitle">OpenCode · запросы</h3>
+            <div class="chart-box chart-box-sm"><canvas id="chart-req-opencode"></canvas></div>
+          </div>
+        </div>
+      </div>
+      <div class="row g-3 mb-3">
+        <div class="col-md-4">
+          <div class="panel chart-panel live-panel">
+            <h3 class="section-subtitle">Local Ollama · latency</h3>
+            <div class="chart-box chart-box-sm"><canvas id="chart-lat-ollama"></canvas></div>
+          </div>
+        </div>
+        <div class="col-md-4">
+          <div class="panel chart-panel live-panel">
+            <h3 class="section-subtitle">Ollama Cloud · latency</h3>
+            <div class="chart-box chart-box-sm"><canvas id="chart-lat-ollama-cloud"></canvas></div>
+          </div>
+        </div>
+        <div class="col-md-4">
+          <div class="panel chart-panel live-panel">
+            <h3 class="section-subtitle">OpenCode · latency</h3>
+            <div class="chart-box chart-box-sm"><canvas id="chart-lat-opencode"></canvas></div>
+          </div>
+        </div>
+      </div>
+      <div class="row g-3 mb-4 align-items-stretch">
+        <div class="col-md-3">
+          <div class="panel live-panel live-queue-count">
+            <h3 class="section-subtitle mb-2">В очереди</h3>
+            <div id="queue-waiting" class="queue-waiting-num">0</div>
+            <p class="text-muted small mb-0">ожидающие задачи</p>
+          </div>
+        </div>
+        <div class="col-md-5">
+          <div class="panel chart-panel live-panel">
+            <h3 class="section-subtitle">Очередь · 15 мин</h3>
+            <div class="chart-box chart-box-sm"><canvas id="chart-queue"></canvas></div>
+          </div>
+        </div>
+        <div class="col-md-4">
+          <div class="panel live-panel">
+            <h3 class="section-subtitle">Модели в очереди</h3>
+            <div id="queue-models" class="table-wrap queue-models-wrap">
+              <p class="text-muted mb-0">Пусто</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <h2 class="section-title">Расход по моделям</h2>
       <div id="overview" class="panel table-wrap"></div>
       <div id="detail" class="mt-3"></div>
@@ -190,6 +257,20 @@
           <label class="form-label">Мин. params (B) для OpenCode / tools</label>
           <input name="agent_min_params" class="form-control" type="number" min="1" />
         </div>
+        <hr class="my-3" />
+        <h3 class="section-subtitle">Repair weak tool calls</h3>
+        <div class="form-check mb-2">
+          <input name="repair_weak_tool_calls" class="form-check-input" type="checkbox" id="repair_weak_tool_calls" />
+          <label class="form-check-label" for="repair_weak_tool_calls">Чинить tool JSON слабых моделей → tool_calls (и пускать их при tools)</label>
+        </div>
+        <div class="form-check mb-3">
+          <input name="repair_weak_retry_strong" class="form-check-input" type="checkbox" id="repair_weak_retry_strong" />
+          <label class="form-check-label" for="repair_weak_retry_strong">Если repair не смог — один retry на agent_ok модель</label>
+        </div>
+        <hr class="my-3" />
+        <h3 class="section-subtitle">Local allowlist по категориям</h3>
+        <p class="text-muted small">Если список категории непустой — локально только отмеченные модели (и только если уже loaded в Ollama). Пустой список = как раньше. Cloud без ограничений allowlist.</p>
+        <div id="local-allowlist" class="mb-3"></div>
         <button type="submit" class="btn btn-accent">Сохранить</button>
       </form>
       <h3 class="section-subtitle">Inventory</h3>

@@ -26,3 +26,19 @@ func (r *Registry) Get(providerID string) *Local {
 	defer r.mu.RUnlock()
 	return r.m[providerID]
 }
+
+// SnapshotAll returns queue snapshots keyed by provider id.
+func (r *Registry) SnapshotAll() map[string]QueueSnapshot {
+	out := map[string]QueueSnapshot{}
+	if r == nil {
+		return out
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for id, s := range r.m {
+		if s != nil {
+			out[id] = s.Snapshot()
+		}
+	}
+	return out
+}

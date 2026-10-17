@@ -1,6 +1,8 @@
 package router
 
 import (
+	"strings"
+
 	"router-app/internal/classifier"
 	"router-app/internal/provider"
 )
@@ -11,6 +13,12 @@ type ScoreOpts struct {
 	ExternalOK func(providerID string) bool
 	// AgentOK when set and class.NeedsTools: only keep models that return true.
 	AgentOK func(m provider.ModelInfo) bool
+	// LocalAllow when non-empty: CostTier==local models must be in this set (by ModelInfo.ID()).
+	LocalAllow map[string]bool
+	// LocalLoaded when set with non-empty LocalAllow: local models must be loaded (e.g. in ollama ps).
+	LocalLoaded func(m provider.ModelInfo) bool
+	// NoLocal drops all CostTier==local candidates (force cloud path).
+	NoLocal bool
 }
 
 func filterModels(models []provider.ModelInfo, class classifier.Result, opts ScoreOpts) []provider.ModelInfo {
@@ -28,7 +36,41 @@ func filterModels(models []provider.ModelInfo, class classifier.Result, opts Sco
 		if opts.LocalOnly && m.CostTier != "local" {
 			continue
 		}
+		if opts.NoLocal && m.CostTier == "local" {
+			continue
+		}
+		if m.CostTier == "local" && len(opts.LocalAllow) > 0 {
+			if !opts.LocalAllow[m.ID()] {
+				continue
+			}
+			if opts.LocalLoaded != nil && !opts.LocalLoaded(m) {
+				continue
+			}
+		}
 		out = append(out, m)
+	}
+	return out
+}
+
+// AllowlistForCategory returns the set of allowed local model IDs for a category.
+// nil/empty means "no allowlist" (legacy scoring).
+func AllowlistForCategory(lists map[string][]string, category string) map[string]bool {
+	if len(lists) == 0 {
+		return nil
+	}
+	ids := lists[category]
+	if len(ids) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			out[id] = true
+		}
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

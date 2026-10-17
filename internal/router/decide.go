@@ -22,6 +22,10 @@ type DecideInput struct {
 	LocalOnly    bool
 	ExternalOK   func(providerID string) bool
 	AgentOK      func(m provider.ModelInfo) bool
+	// LocalAllow / LocalLoaded / NoLocal — see ScoreOpts.
+	LocalAllow  map[string]bool
+	LocalLoaded func(m provider.ModelInfo) bool
+	NoLocal     bool
 }
 
 type DecideOutput struct {
@@ -51,10 +55,13 @@ func Decide(ctx context.Context, in DecideInput) (DecideOutput, error) {
 	}
 
 	opts := ScoreOpts{
-		Escalate:   ShouldEscalate(class.Complexity, in.EscalateMin),
-		LocalOnly:  in.LocalOnly,
-		ExternalOK: in.ExternalOK,
-		AgentOK:    in.AgentOK,
+		Escalate:    ShouldEscalate(class.Complexity, in.EscalateMin),
+		LocalOnly:   in.LocalOnly,
+		ExternalOK:  in.ExternalOK,
+		AgentOK:     in.AgentOK,
+		LocalAllow:  in.LocalAllow,
+		LocalLoaded: in.LocalLoaded,
+		NoLocal:     in.NoLocal,
 	}
 
 	if in.Sticky != nil && in.SessionKey != "" && !userOverride && !in.LocalOnly {
@@ -62,6 +69,32 @@ func Decide(ctx context.Context, in DecideInput) (DecideOutput, error) {
 			for _, m := range in.Models {
 				if m.ID() != id || !m.Routable {
 					continue
+				}
+				if m.CostTier == "local" && len(opts.LocalAllow) > 0 && !opts.LocalAllow[m.ID()] {
+					in.Sticky.Clear(in.SessionKey)
+					out, err := decideFresh(class, in.Models, opts)
+					if err != nil {
+						return DecideOutput{}, err
+					}
+					out.StickyBreak = true
+					out.Reason = "sticky-break-allowlist"
+					if in.Sticky != nil && in.SessionKey != "" {
+						in.Sticky.Set(in.SessionKey, out.Model.ID(), now)
+					}
+					return out, nil
+				}
+				if m.CostTier == "local" && len(opts.LocalAllow) > 0 && opts.LocalLoaded != nil && !opts.LocalLoaded(m) {
+					in.Sticky.Clear(in.SessionKey)
+					out, err := decideFresh(class, in.Models, opts)
+					if err != nil {
+						return DecideOutput{}, err
+					}
+					out.StickyBreak = true
+					out.Reason = "sticky-break-not-loaded"
+					if in.Sticky != nil && in.SessionKey != "" {
+						in.Sticky.Set(in.SessionKey, out.Model.ID(), now)
+					}
+					return out, nil
 				}
 				if class.NeedsTools && opts.AgentOK != nil && !opts.AgentOK(m) {
 					in.Sticky.Clear(in.SessionKey)

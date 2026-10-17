@@ -26,6 +26,16 @@ type RuntimeSettings struct {
 	LocalQueueRedirect bool `json:"local_queue_redirect"`
 
 	AgentMinParams int `json:"agent_min_params"`
+
+	// RepairWeakToolCalls rewrites fake tool JSON in assistant content into tool_calls
+	// for models that fail the agent_ok gate (or any non-agent_ok when tools are present).
+	RepairWeakToolCalls bool `json:"repair_weak_tool_calls"`
+	// RepairWeakRetryStrong retries once on an agent_ok model if repair cannot parse tool_calls.
+	RepairWeakRetryStrong bool `json:"repair_weak_retry_strong"`
+
+	// LocalAllowlist maps classifier category → allowed local model IDs (e.g. "ollama/gpt-oss:20b").
+	// Empty/missing category = no allowlist (legacy scoring for locals).
+	LocalAllowlist map[string][]string `json:"local_allowlist"`
 }
 
 type SettingsStore struct {
@@ -51,6 +61,9 @@ func defaultSettings() RuntimeSettings {
 		LocalQueueMax:             8,
 		LocalQueueRedirect:        false,
 		AgentMinParams:            14,
+		RepairWeakToolCalls:       true,
+		RepairWeakRetryStrong:     true,
+		LocalAllowlist:            map[string][]string{},
 	}
 }
 
@@ -62,6 +75,17 @@ func NewSettingsStore(dataDir string) (*SettingsStore, error) {
 	b, err := os.ReadFile(s.path)
 	if err == nil {
 		_ = json.Unmarshal(b, &s.cur)
+		// Bools defaulting to true: treat missing keys as default (JSON false ≠ unset).
+		var raw map[string]json.RawMessage
+		if json.Unmarshal(b, &raw) == nil {
+			d := defaultSettings()
+			if _, ok := raw["repair_weak_tool_calls"]; !ok {
+				s.cur.RepairWeakToolCalls = d.RepairWeakToolCalls
+			}
+			if _, ok := raw["repair_weak_retry_strong"]; !ok {
+				s.cur.RepairWeakRetryStrong = d.RepairWeakRetryStrong
+			}
+		}
 	}
 	s.applyEnvOverrides()
 	if s.cur.Classifier == "" {
@@ -96,6 +120,9 @@ func (s *SettingsStore) fillEscalationDefaults() {
 	}
 	if s.cur.AgentMinParams <= 0 {
 		s.cur.AgentMinParams = d.AgentMinParams
+	}
+	if s.cur.LocalAllowlist == nil {
+		s.cur.LocalAllowlist = map[string][]string{}
 	}
 }
 

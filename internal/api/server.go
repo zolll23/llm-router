@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -31,6 +32,7 @@ type Server struct {
 	Perf       *provider.PerfStore
 	Schedulers *scheduler.Registry
 	Overrides  *ModelOverridesStore
+	queueHist  *queueHistory
 }
 
 func (s *Server) classifier() classifier.Classifier {
@@ -67,6 +69,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/settings", s.handlePutSettings)
 	mux.HandleFunc("GET /api/stats/overview", s.handleOverview)
 	mux.HandleFunc("GET /api/stats/sankey", s.handleSankey)
+	mux.HandleFunc("GET /api/stats/live", s.handleLiveStats)
 	mux.HandleFunc("GET /api/stats/models/{id...}", s.handleModelDetail)
 	mux.HandleFunc("GET /api/eval/summary", s.handleQuality)
 	mux.HandleFunc("GET /api/eval/confusion", s.handleConfusion)
@@ -222,6 +225,65 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ov)
 }
 
+func (s *Server) handleLiveStats(w http.ResponseWriter, r *http.Request) {
+	sinceMS, bucketMS := store.DefaultLiveWindow()
+	if v := r.URL.Query().Get("minutes"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 180 {
+			sinceMS = time.Now().Add(-time.Duration(n) * time.Minute).UnixMilli()
+		}
+	}
+	providers, err := s.DB.ProviderLiveSince(sinceMS, bucketMS)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	waiting := 0
+	var waitingModels []scheduler.QueueModelCount
+	var inFlight []string
+	queues := map[string]scheduler.QueueSnapshot{}
+	if s.Schedulers != nil {
+		queues = s.Schedulers.SnapshotAll()
+		for _, q := range queues {
+			waiting += q.Waiting
+			waitingModels = append(waitingModels, q.WaitingModels...)
+			inFlight = append(inFlight, q.InFlight...)
+		}
+	}
+	// Merge waiting model counts across providers.
+	merged := map[string]int{}
+	for _, m := range waitingModels {
+		merged[m.Model] += m.N
+	}
+	waitingModels = waitingModels[:0]
+	for model, n := range merged {
+		waitingModels = append(waitingModels, scheduler.QueueModelCount{Model: model, N: n})
+	}
+	sort.Slice(waitingModels, func(i, j int) bool {
+		if waitingModels[i].N != waitingModels[j].N {
+			return waitingModels[i].N > waitingModels[j].N
+		}
+		return waitingModels[i].Model < waitingModels[j].Model
+	})
+
+	if s.queueHist == nil {
+		s.queueHist = newQueueHistory(15 * time.Minute)
+	}
+	s.queueHist.Sample(waiting)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"window_minutes": 15,
+		"providers":      providers,
+		"queue": map[string]any{
+			"waiting":        waiting,
+			"waiting_models": waitingModels,
+			"in_flight":      inFlight,
+			"series":         s.queueHist.Series(),
+			"by_provider":    queues,
+		},
+	})
+}
+
 func (s *Server) handleSankey(w http.ResponseWriter, r *http.Request) {
 	days := 7
 	if v := r.URL.Query().Get("days"); v != "" {
@@ -356,6 +418,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 				LocalQueueMax:            cur.LocalQueueMax,
 				LocalQueueRedirect:       cur.LocalQueueRedirect,
 				AgentMinParams:           cur.AgentMinParams,
+				RepairWeakToolCalls:      cur.RepairWeakToolCalls,
+				RepairWeakRetryStrong:    cur.RepairWeakRetryStrong,
+				LocalAllowlist:           cur.LocalAllowlist,
 			}
 		},
 	}
