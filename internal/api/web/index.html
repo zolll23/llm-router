@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Router</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header>
+    <h1>Router</h1>
+    <nav>
+      <button data-tab="usage" class="active">Usage</button>
+      <button data-tab="quality">Качество</button>
+      <button data-tab="settings">Настройки</button>
+    </nav>
+  </header>
+  <main>
+    <section id="usage" class="tab active">
+      <h2>Расход по моделям</h2>
+      <div id="overview"></div>
+      <div id="detail"></div>
+    </section>
+    <section id="quality" class="tab">
+      <h2>Качество роутинга (7 дней)</h2>
+      <pre id="quality-box"></pre>
+    </section>
+    <section id="settings" class="tab">
+      <h2>Настройки</h2>
+      <form id="settings-form">
+        <label>Classifier
+          <select name="classifier">
+            <option value="nimble">nimble</option>
+            <option value="heuristic">heuristic</option>
+          </select>
+        </label>
+        <label>Nimble model <input name="nimble_model" /></label>
+        <label>Nimble base URL <input name="nimble_base_url" /></label>
+        <label>Sticky TTL (min) <input name="sticky_ttl_minutes" type="number" /></label>
+        <label>Keep-alive <input name="keep_alive" /></label>
+        <button type="submit">Сохранить</button>
+      </form>
+      <h3>Inventory</h3>
+      <button id="sync-btn" type="button">Sync now</button>
+      <pre id="inventory"></pre>
+    </section>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -11,9 +11,41 @@ See:
 
 ```bash
 go run ./cmd/router -config configs/config.example.yaml
+# UI: http://127.0.0.1:8080/
 curl -s http://127.0.0.1:8080/health
+curl -s http://127.0.0.1:8080/v1/models
 ```
+
+Requires Ollama with at least one local model for chat. Classifier uses Nimble via `/v1/systemone` when available, otherwise heuristic fallback.
 
 ## OpenCode
 
-Point an OpenAI-compatible provider at `http://127.0.0.1:8080/v1` and select model `auto` (documented further as features land).
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "router/auto",
+  "provider": {
+    "router": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Local Router",
+      "options": {
+        "baseURL": "http://127.0.0.1:8080/v1",
+        "apiKey": "local"
+      },
+      "models": {
+        "auto": {
+          "name": "Smart Router",
+          "limit": { "context": 128000, "output": 16384 }
+        }
+      }
+    }
+  }
+}
+```
+
+## Features in tree
+
+- Multi-provider inventory (namespaced `provider/model`)
+- Nimble/heuristic classify + local-first score + sticky sessions
+- Usage SQLite + web UI (Usage / Качество / Настройки)
+- `POST /api/eval/export-finetune` → GLiNER JSONL under `data_dir/finetune/`

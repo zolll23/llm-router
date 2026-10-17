@@ -12,6 +12,8 @@ import (
 	"router/internal/api"
 	"router/internal/config"
 	"router/internal/provider"
+	"router/internal/router"
+	"router/internal/store"
 )
 
 func main() {
@@ -25,6 +27,26 @@ func main() {
 		log.Fatal(err)
 	}
 
+	db, err := store.Open(cfg.DataDir)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+
+	settings, err := api.NewSettingsStore(cfg.DataDir)
+	if err != nil {
+		log.Fatal(err)
+	}
+	st := settings.Get()
+	// seed nimble URL from first ollama provider if unset default
+	for _, pc := range cfg.Providers {
+		if pc.Type == "ollama" && pc.BaseURL != "" && (st.NimbleBaseURL == "" || st.NimbleBaseURL == "http://127.0.0.1:11434") {
+			st.NimbleBaseURL = pc.BaseURL
+			_ = settings.Put(st)
+			break
+		}
+	}
+
 	reg := provider.NewRegistry()
 	for _, pc := range cfg.Providers {
 		p, err := provider.NewFromConfig(pc)
@@ -33,14 +55,25 @@ func main() {
 		}
 		reg.Register(p)
 	}
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
-	if err := reg.Sync(ctx); err != nil {
-		log.Printf("initial sync: %v", err)
-	}
+	_ = reg.Sync(ctx)
 	reg.StartPeriodicSync(ctx, 60*time.Second)
 
-	srv := &api.Server{Cfg: cfg, Reg: reg}
+	ttl := time.Duration(settings.Get().StickyTTLMinutes) * time.Minute
+	ui, err := api.UIHandler()
+	if err != nil {
+		log.Fatal(err)
+	}
+	srv := &api.Server{
+		Cfg:      cfg,
+		Reg:      reg,
+		DB:       db,
+		Sticky:   router.NewStickyStore(ttl),
+		Settings: settings,
+		UI:       ui,
+	}
 	httpSrv := &http.Server{Addr: cfg.Listen, Handler: srv.Handler()}
 	go func() {
 		<-ctx.Done()
@@ -48,7 +81,7 @@ func main() {
 		defer c()
 		_ = httpSrv.Shutdown(shutdownCtx)
 	}()
-	log.Printf("listening on %s (virtual model %q, %d models)", cfg.Listen, cfg.VirtualModel, len(reg.Models()))
+	log.Printf("listening on http://%s (ui /, virtual=%q, models=%d)", cfg.Listen, cfg.VirtualModel, len(reg.Models()))
 	if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}

@@ -6,10 +6,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"router/internal/api"
 	"router/internal/config"
 	"router/internal/provider"
+	"router/internal/router"
+	"router/internal/store"
 )
 
 type stubProvider struct {
@@ -37,12 +40,28 @@ func TestV1ModelsIncludesVirtualAndInventory(t *testing.T) {
 	if err := reg.Sync(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	srv := &api.Server{Cfg: &config.Config{VirtualModel: "auto"}, Reg: reg}
+	dir := t.TempDir()
+	db, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	settings, err := api.NewSettingsStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &api.Server{
+		Cfg:      &config.Config{Listen: "127.0.0.1:8080", VirtualModel: "auto"},
+		Reg:      reg,
+		DB:       db,
+		Sticky:   router.NewStickyStore(time.Hour),
+		Settings: settings,
+	}
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
-		t.Fatalf("status %d", rr.Code)
+		t.Fatalf("status %d body %s", rr.Code, rr.Body.String())
 	}
 	var body struct {
 		Data []struct {
