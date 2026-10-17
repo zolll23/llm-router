@@ -9,6 +9,8 @@ type ScoreOpts struct {
 	Escalate   bool
 	LocalOnly  bool
 	ExternalOK func(providerID string) bool
+	// AgentOK when set and class.NeedsTools: only keep models that return true.
+	AgentOK func(m provider.ModelInfo) bool
 }
 
 func filterModels(models []provider.ModelInfo, class classifier.Result, opts ScoreOpts) []provider.ModelInfo {
@@ -18,6 +20,9 @@ func filterModels(models []provider.ModelInfo, class classifier.Result, opts Sco
 			continue
 		}
 		if class.NeedsTools && !m.Tools {
+			continue
+		}
+		if class.NeedsTools && opts.AgentOK != nil && !opts.AgentOK(m) {
 			continue
 		}
 		if opts.LocalOnly && m.CostTier != "local" {

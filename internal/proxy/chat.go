@@ -28,6 +28,7 @@ type RoutingSettings struct {
 	KeepAlive                string
 	LocalQueueMax            int
 	LocalQueueRedirect       bool
+	AgentMinParams           int
 }
 
 type Deps struct {
@@ -38,6 +39,7 @@ type Deps struct {
 	Quotas     *provider.QuotaStore
 	Perf       *provider.PerfStore
 	Schedulers *scheduler.Registry
+	Overrides  interface{ Get(id string) string }
 	Settings   func() RoutingSettings
 	KeepAlive  string
 }
@@ -185,6 +187,17 @@ func ProxyChat(ctx context.Context, d Deps, body []byte, hdr http.Header) (*Chat
 		}
 		return false
 	}
+	minParams := rs.AgentMinParams
+	if minParams <= 0 {
+		minParams = 14
+	}
+	agentOK := func(m provider.ModelInfo) bool {
+		ov := provider.OverrideAuto
+		if d.Overrides != nil {
+			ov = d.Overrides.Get(m.ID())
+		}
+		return provider.EvalAgentOK(m, minParams, ov).OK
+	}
 
 	dec, err := router.Decide(ctx, router.DecideInput{
 		Class:       class,
@@ -194,7 +207,23 @@ func ProxyChat(ctx context.Context, d Deps, body []byte, hdr http.Header) (*Chat
 		ForceTier:   force,
 		EscalateMin: rs.EscalateMin,
 		ExternalOK:  extOK,
+		AgentOK:     agentOK,
 	})
+	if err != nil && class.NeedsTools && anyExtOK() {
+		dec, err = router.Decide(ctx, router.DecideInput{
+			Class:       class,
+			Models:      d.Reg.Models(),
+			SessionKey:  session,
+			Sticky:      d.Sticky,
+			ForceTier:   force,
+			EscalateMin: "trivial",
+			ExternalOK:  extOK,
+			AgentOK:     agentOK,
+		})
+		if err == nil {
+			dec.Reason = "no_local_agent_ok_redirect"
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -218,6 +247,7 @@ func ProxyChat(ctx context.Context, d Deps, body []byte, hdr http.Header) (*Chat
 						ForceTier:   force,
 						EscalateMin: "trivial",
 						ExternalOK:  extOK,
+						AgentOK:     agentOK,
 					})
 					if eerr == nil && extDec.Model.CostTier == "metered" {
 						dec = extDec
@@ -265,6 +295,7 @@ func ProxyChat(ctx context.Context, d Deps, body []byte, hdr http.Header) (*Chat
 			EscalateMin: rs.EscalateMin,
 			LocalOnly:   true,
 			ExternalOK:  func(string) bool { return false },
+			AgentOK:     agentOK,
 		})
 		if lerr == nil {
 			if release != nil {

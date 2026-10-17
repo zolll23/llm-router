@@ -30,6 +30,7 @@ type Server struct {
 	Quotas     *provider.QuotaStore
 	Perf       *provider.PerfStore
 	Schedulers *scheduler.Registry
+	Overrides  *ModelOverridesStore
 }
 
 func (s *Server) classifier() classifier.Classifier {
@@ -59,6 +60,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/chat/completions", s.handleChat)
 	mux.HandleFunc("GET /api/inventory", s.handleInventory)
 	mux.HandleFunc("GET /api/models", s.handleModelsRich)
+	mux.HandleFunc("PUT /api/models/overrides", s.handlePutModelOverride)
 	mux.HandleFunc("GET /api/quotas", s.handleQuotas)
 	mux.HandleFunc("POST /api/inventory/sync", s.handleSync)
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
@@ -116,18 +118,33 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleModelsRich(w http.ResponseWriter, r *http.Request) {
 	models := s.Reg.Models()
+	minParams := 14
+	if s.Settings != nil {
+		if n := s.Settings.Get().AgentMinParams; n > 0 {
+			minParams = n
+		}
+	}
 	out := make([]map[string]any, 0, len(models))
 	for _, m := range models {
+		ov := provider.OverrideAuto
+		if s.Overrides != nil {
+			ov = s.Overrides.Get(m.ID())
+		}
+		ag := provider.EvalAgentOK(m, minParams, ov)
 		row := map[string]any{
-			"id":           m.ID(),
-			"provider_id":  m.ProviderID,
-			"upstream_id":  m.UpstreamID,
-			"display_name": m.DisplayName,
-			"cost_tier":    m.CostTier,
-			"routable":     m.Routable,
-			"tools":        m.Tools,
-			"params":       m.Params,
-			"metrics":      m.Metrics,
+			"id":               m.ID(),
+			"provider_id":      m.ProviderID,
+			"upstream_id":      m.UpstreamID,
+			"display_name":     m.DisplayName,
+			"cost_tier":        m.CostTier,
+			"routable":         m.Routable,
+			"tools":            m.Tools,
+			"params":           m.Params,
+			"metrics":          m.Metrics,
+			"agent_ok":         ag.OK,
+			"agent_ok_source":  ag.Source,
+			"agent_ok_reason":  ag.Reason,
+			"agent_ok_override": ov,
 			"benchmark_url": "https://huggingface.co/models?search=" +
 				strings.ReplaceAll(m.UpstreamID, ":", "+"),
 		}
@@ -141,6 +158,26 @@ func (s *Server) handleModelsRich(w http.ResponseWriter, r *http.Request) {
 		out = append(out, row)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"models": out})
+}
+
+func (s *Server) handlePutModelOverride(w http.ResponseWriter, r *http.Request) {
+	if s.Overrides == nil {
+		http.Error(w, "overrides unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var body struct {
+		ID       string `json:"id"`
+		Override string `json:"override"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.ID == "" {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if err := s.Overrides.Put(body.ID, body.Override); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": body.ID, "override": s.Overrides.Get(body.ID)})
 }
 
 func (s *Server) handleQuotas(w http.ResponseWriter, r *http.Request) {
@@ -305,6 +342,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		Quotas:     s.Quotas,
 		Perf:       s.Perf,
 		Schedulers: s.Schedulers,
+		Overrides:  s.Overrides,
 		KeepAlive:  st.KeepAlive,
 		Settings: func() proxy.RoutingSettings {
 			cur := s.Settings.Get()
@@ -317,6 +355,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 				KeepAlive:                cur.KeepAlive,
 				LocalQueueMax:            cur.LocalQueueMax,
 				LocalQueueRedirect:       cur.LocalQueueRedirect,
+				AgentMinParams:           cur.AgentMinParams,
 			}
 		},
 	}

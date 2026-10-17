@@ -44,6 +44,10 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	overrides, err := api.NewModelOverridesStore(cfg.DataDir)
+	if err != nil {
+		log.Fatal(err)
+	}
 	st := settings.Get()
 	// seed nimble URL from first ollama provider if unset default
 	for _, pc := range cfg.Providers {
@@ -128,6 +132,7 @@ func main() {
 		Quotas:     quotas,
 		Perf:       perf,
 		Schedulers: schedulers,
+		Overrides:  overrides,
 	}
 	httpSrv := &http.Server{Addr: cfg.Listen, Handler: srv.Handler()}
 	go func() {

@@ -186,6 +186,10 @@
           <input name="local_queue_redirect" class="form-check-input" type="checkbox" id="local_queue_redirect" />
           <label class="form-check-label" for="local_queue_redirect">Редирект наружу при переполнении (иначе 429)</label>
         </div>
+        <div class="mb-3">
+          <label class="form-label">Мин. params (B) для OpenCode / tools</label>
+          <input name="agent_min_params" class="form-control" type="number" min="1" />
+        </div>
         <button type="submit" class="btn btn-accent">Сохранить</button>
       </form>
       <h3 class="section-subtitle">Inventory</h3>

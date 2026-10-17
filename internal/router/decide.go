@@ -21,6 +21,7 @@ type DecideInput struct {
 	EscalateMin  string
 	LocalOnly    bool
 	ExternalOK   func(providerID string) bool
+	AgentOK      func(m provider.ModelInfo) bool
 }
 
 type DecideOutput struct {
@@ -53,6 +54,7 @@ func Decide(ctx context.Context, in DecideInput) (DecideOutput, error) {
 		Escalate:   ShouldEscalate(class.Complexity, in.EscalateMin),
 		LocalOnly:  in.LocalOnly,
 		ExternalOK: in.ExternalOK,
+		AgentOK:    in.AgentOK,
 	}
 
 	if in.Sticky != nil && in.SessionKey != "" && !userOverride && !in.LocalOnly {
@@ -60,6 +62,19 @@ func Decide(ctx context.Context, in DecideInput) (DecideOutput, error) {
 			for _, m := range in.Models {
 				if m.ID() != id || !m.Routable {
 					continue
+				}
+				if class.NeedsTools && opts.AgentOK != nil && !opts.AgentOK(m) {
+					in.Sticky.Clear(in.SessionKey)
+					out, err := decideFresh(class, in.Models, opts)
+					if err != nil {
+						return DecideOutput{}, err
+					}
+					out.StickyBreak = true
+					out.Reason = "sticky-break-agent-ok"
+					if in.Sticky != nil && in.SessionKey != "" {
+						in.Sticky.Set(in.SessionKey, out.Model.ID(), now)
+					}
+					return out, nil
 				}
 				// Break sticky when escalation wants external but pin is local (or vice versa under cooldown)
 				if opts.Escalate && m.CostTier == "local" {

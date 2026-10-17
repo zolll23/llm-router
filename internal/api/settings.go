@@ -24,6 +24,8 @@ type RuntimeSettings struct {
 
 	LocalQueueMax      int  `json:"local_queue_max"`
 	LocalQueueRedirect bool `json:"local_queue_redirect"`
+
+	AgentMinParams int `json:"agent_min_params"`
 }
 
 type SettingsStore struct {
@@ -48,6 +50,7 @@ func defaultSettings() RuntimeSettings {
 		QuotaCooldownSeconds:      600,
 		LocalQueueMax:             8,
 		LocalQueueRedirect:        false,
+		AgentMinParams:            14,
 	}
 }
 
@@ -90,6 +93,9 @@ func (s *SettingsStore) fillEscalationDefaults() {
 	}
 	if s.cur.LocalQueueMax < 0 {
 		s.cur.LocalQueueMax = d.LocalQueueMax
+	}
+	if s.cur.AgentMinParams <= 0 {
+		s.cur.AgentMinParams = d.AgentMinParams
 	}
 }
 

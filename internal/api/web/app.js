@@ -732,26 +732,45 @@ async function loadModelsPage() {
   }
   const models = modelsRes.models || [];
   let html = `<table class="table table-sm align-middle mb-0"><thead><tr>
-    <th>Провайдер</th><th>Модель</th><th>Tier</th><th>Params</th><th>Routable</th><th>Tools</th><th>Задержка</th><th></th>
+    <th>Провайдер</th><th>Модель</th><th>Tier</th><th>Params</th><th>Tools</th><th>OpenCode</th><th>Override</th><th>Задержка</th><th></th>
   </tr></thead><tbody>`;
   for (const m of models) {
     const lat = m.metrics?.latency_p50 != null ? Math.round(m.metrics.latency_p50) + " ms" : "—";
     const links = [];
     if (m.ollama_url) links.push(`<a href="${esc(m.ollama_url)}" target="_blank" rel="noopener" title="Ollama"><i class="bi bi-box-arrow-up-right"></i></a>`);
     if (m.benchmark_url) links.push(`<a href="${esc(m.benchmark_url)}" target="_blank" rel="noopener" title="Бенчмарк"><i class="bi bi-bar-chart-line"></i></a>`);
+    const badge = m.agent_ok
+      ? `<span class="badge text-bg-success" title="${esc(m.agent_ok_reason || "")}">OK</span>`
+      : `<span class="badge text-bg-secondary" title="${esc(m.agent_ok_reason || "")}">нет</span>`;
+    const ov = m.agent_ok_override || "auto";
     html += `<tr>
       <td>${esc(m.provider_id)}</td>
       <td>${esc(m.display_name || m.upstream_id || m.id)}</td>
       <td>${esc(m.cost_tier || "—")}</td>
       <td>${m.params || "—"}</td>
-      <td>${m.routable ? "да" : "нет"}</td>
       <td>${m.tools ? "да" : "нет"}</td>
+      <td>${badge} <span class="priority-meta">${esc(m.agent_ok_source || "")}</span></td>
+      <td><select class="form-select form-select-sm agent-override" data-id="${esc(m.id)}" style="min-width:6rem">
+        <option value="auto"${ov === "auto" ? " selected" : ""}>auto</option>
+        <option value="allow"${ov === "allow" ? " selected" : ""}>allow</option>
+        <option value="deny"${ov === "deny" ? " selected" : ""}>deny</option>
+      </select></td>
       <td>${lat}</td>
       <td><div class="icon-actions">${links.join("")}</div></td>
     </tr>`;
   }
   html += `</tbody></table>`;
-  document.getElementById("models-table").innerHTML = models.length ? html : "<p class=\"text-muted p-3 mb-0\">Нет моделей в inventory</p>";
+  const table = document.getElementById("models-table");
+  table.innerHTML = models.length ? html : "<p class=\"text-muted p-3 mb-0\">Нет моделей в inventory</p>";
+  table.querySelectorAll(".agent-override").forEach((sel) => {
+    sel.addEventListener("change", async () => {
+      await api("/api/models/overrides", {
+        method: "PUT",
+        body: JSON.stringify({ id: sel.dataset.id, override: sel.value }),
+      });
+      await loadModelsPage();
+    });
+  });
 }
 
 async function loadSettings() {
@@ -770,6 +789,7 @@ async function loadSettings() {
   form.quota_cooldown_seconds.value = st.quota_cooldown_seconds ?? 600;
   form.local_queue_max.value = st.local_queue_max ?? 8;
   form.local_queue_redirect.checked = !!st.local_queue_redirect;
+  form.agent_min_params.value = st.agent_min_params ?? 14;
   const inv = await api("/api/inventory");
   document.getElementById("inventory").textContent = JSON.stringify(inv, null, 2);
 }
@@ -792,6 +812,7 @@ document.getElementById("settings-form").addEventListener("submit", async (e) =>
     quota_cooldown_seconds: Number(f.quota_cooldown_seconds.value || 600),
     local_queue_max: Number(f.local_queue_max.value ?? 8),
     local_queue_redirect: !!f.local_queue_redirect.checked,
+    agent_min_params: Number(f.agent_min_params.value || 14),
   };
   await api("/api/settings", { method: "PUT", body: JSON.stringify(body) });
   await loadSettings();
