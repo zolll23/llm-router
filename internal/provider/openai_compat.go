@@ -24,7 +24,7 @@ func NewOpenAICompat(id, baseURL, apiKeyEnv string) *OpenAICompat {
 		id:        id,
 		baseURL:   strings.TrimRight(baseURL, "/"),
 		apiKeyEnv: apiKeyEnv,
-		client:    &http.Client{Timeout: 10 * time.Minute},
+		client:    &http.Client{Timeout: 30 * time.Minute},
 	}
 }
 
