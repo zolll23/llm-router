@@ -66,7 +66,7 @@ LIMIT ?`, limit)
 		if err := rows.Scan(&reqID, &state, &pred, &chosen, &tier, &escalated, &conf); err != nil {
 			return n, err
 		}
-		gold, under, over, jconf, err := j.judge(ctx, cfg, state, pred, chosen, tier, escalated == 1)
+		gold, under, over, jconf, err := cfg.judge(ctx, state, pred, chosen, tier, escalated == 1)
 		if err != nil {
 			continue
 		}
@@ -88,7 +88,7 @@ func boolInt(v bool) int {
 	return 0
 }
 
-func (JudgeConfig) judge(ctx context.Context, cfg JudgeConfig, state, pred, chosen, tier string, escalated bool) (gold string, under, over bool, conf float64, err error) {
+func (cfg JudgeConfig) judge(ctx context.Context, state, pred, chosen, tier string, escalated bool) (gold string, under, over bool, conf float64, err error) {
 	body := map[string]any{
 		"model": cfg.Model,
 		"state": map[string]any{
