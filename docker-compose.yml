@@ -23,9 +23,14 @@ services:
     environment:
       ROUTER_CLASSIFIER: gliner
       ROUTER_GLINER_BASE_URL: http://gliner:8090
+      # Written on the Docker host by `make detect-host` / `make docker-up`
+      ROUTER_HOST_HARDWARE_FILE: /host/host_hardware.json
+      OPENCODE_API_KEY: ${OPENCODE_API_KEY:-}
+
     volumes:
       - router-data:/data
       - ./configs/config.docker.yaml:/configs/config.yaml:ro
+      - ./data/host_hardware.json:/host/host_hardware.json:ro
     command: ["-config", "/configs/config.yaml"]
     extra_hosts:
       - "host.docker.internal:host-gateway"

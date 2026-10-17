@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"router/internal/config"
+	"router-app/internal/config"
 )
 
 func TestLoadDefaults(t *testing.T) {

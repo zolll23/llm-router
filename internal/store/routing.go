@@ -7,13 +7,16 @@ type RoutingEvent struct {
 	RequestID        string
 	SessionID        string
 	StateText        string
+	PredCategory     string
 	PredComplexity   string
 	PredNeedsTools   bool
 	PredConfidence   float64
 	ClassifierSource string
 	ChosenModel      string
 	CostTier         string
+	Pool             string
 	Reason           string
+	HTTPStatus       int
 	Escalated        bool
 	StickyBreak      bool
 	UserOverride     bool
@@ -39,11 +42,11 @@ func (d *DB) InsertRouting(e RoutingEvent) error {
 		return 0
 	}
 	_, err := d.SQL.Exec(`
-INSERT INTO routing_events(ts, request_id, session_id, state_text, pred_complexity, pred_needs_tools,
-  pred_confidence, classifier_source, chosen_model, cost_tier, reason, escalated, sticky_break, user_override, local_success)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		e.TS, e.RequestID, e.SessionID, truncate(e.StateText, 4000), e.PredComplexity, b(e.PredNeedsTools),
-		e.PredConfidence, e.ClassifierSource, e.ChosenModel, e.CostTier, e.Reason,
+INSERT INTO routing_events(ts, request_id, session_id, state_text, pred_category, pred_complexity, pred_needs_tools,
+  pred_confidence, classifier_source, chosen_model, cost_tier, pool, reason, http_status, escalated, sticky_break, user_override, local_success)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		e.TS, e.RequestID, e.SessionID, truncate(e.StateText, 4000), e.PredCategory, e.PredComplexity, b(e.PredNeedsTools),
+		e.PredConfidence, e.ClassifierSource, e.ChosenModel, e.CostTier, e.Pool, e.Reason, e.HTTPStatus,
 		b(e.Escalated), b(e.StickyBreak), b(e.UserOverride), b(e.LocalSuccess))
 	return err
 }

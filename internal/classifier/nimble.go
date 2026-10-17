@@ -12,9 +12,9 @@ import (
 )
 
 type Nimble struct {
-	BaseURL string
-	Model   string
-	Client  *http.Client
+	BaseURL  string
+	Model    string
+	Client   *http.Client
 	Fallback Classifier
 }
 
@@ -53,12 +53,22 @@ func (n *Nimble) Classify(ctx context.Context, in Input) (Result, error) {
 	reqBody := systemOneReq{
 		Model: n.Model,
 		State: map[string]any{
-			"user_text":      in.UserText,
-			"tools_present":  in.ToolsPresent,
-			"approx_tokens":  in.ApproxTokens,
-			"message_count":  in.MessageCount,
+			"user_text":     in.UserText,
+			"tools_present": in.ToolsPresent,
+			"approx_tokens": in.ApproxTokens,
+			"message_count": in.MessageCount,
 		},
 		Questions: map[string]any{
+			"category": map[string]any{
+				"type":         "choice",
+				"instructions": "What kind of user request is this?",
+				"criteria": map[string]string{
+					"coding":    "Writing, editing, debugging, or testing code",
+					"reasoning": "Logic, math, analysis, proofs, deep explanation",
+					"chat":      "Conversation, Q&A, greetings, general help",
+					"creative":  "Stories, poems, brainstorming, imaginative writing",
+				},
+			},
 			"complexity": map[string]any{
 				"type":         "choice",
 				"instructions": "How complex is this coding/agent request?",
@@ -109,11 +119,22 @@ func (n *Nimble) Classify(ctx context.Context, in Input) (Result, error) {
 	if conf == 0 {
 		conf = 0.7
 	}
-	c := strings.ToLower(compAns.Choice)
-	switch c {
+	c := NormalizeComplexity(compAns.Choice)
+	switch strings.ToLower(compAns.Choice) {
 	case "trivial", "simple", "medium", "hard":
 	default:
-		return Result{}, fmt.Errorf("unexpected complexity %q", c)
+		return Result{}, fmt.Errorf("unexpected complexity %q", compAns.Choice)
 	}
-	return Result{Complexity: c, NeedsTools: needs, Confidence: conf, Source: "nimble"}, nil
+	cat := ""
+	if ca, ok := parsed.Answers["category"]; ok && ca.Choice != "" {
+		cat = NormalizeCategory(ca.Choice)
+	}
+	if cat == "" {
+		if fb, err := n.Fallback.Classify(ctx, in); err == nil && fb.Category != "" {
+			cat = NormalizeCategory(fb.Category)
+		} else {
+			cat = "chat"
+		}
+	}
+	return Result{Complexity: c, Category: cat, NeedsTools: needs, Confidence: conf, Source: "nimble"}, nil
 }

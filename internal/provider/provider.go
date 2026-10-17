@@ -19,6 +19,7 @@ type ModelInfo struct {
 	CostTier    string // local | metered | unknown
 	Capabilities []string // coding, reasoning, general, creative
 	Params      int      // size in billions (e.g. 7, 70)
+	Metrics      map[string]float64
 }
 
 func CanonicalID(providerID, upstreamID string) string {

@@ -1,11 +1,17 @@
 package router
 
 import (
-	"router/internal/classifier"
-	"router/internal/provider"
+	"router-app/internal/classifier"
+	"router-app/internal/provider"
 )
 
-func filterModels(models []provider.ModelInfo, class classifier.Result) []provider.ModelInfo {
+type ScoreOpts struct {
+	Escalate   bool
+	LocalOnly  bool
+	ExternalOK func(providerID string) bool
+}
+
+func filterModels(models []provider.ModelInfo, class classifier.Result, opts ScoreOpts) []provider.ModelInfo {
 	var out []provider.ModelInfo
 	for _, m := range models {
 		if !m.Routable {
@@ -14,71 +20,123 @@ func filterModels(models []provider.ModelInfo, class classifier.Result) []provid
 		if class.NeedsTools && !m.Tools {
 			continue
 		}
+		if opts.LocalOnly && m.CostTier != "local" {
+			continue
+		}
 		out = append(out, m)
 	}
 	return out
 }
 
-func scoreModel(m provider.ModelInfo, class classifier.Result) float64 {
+func scoreModel(m provider.ModelInfo, class classifier.Result, opts ScoreOpts) float64 {
 	score := 0.0
 
-	// Capability alignment
 	for _, cap := range m.Capabilities {
 		if cap == class.Category {
-			score += 30.0
+			score += 100.0
 		}
 	}
 
-	// Cost and efficiency
 	switch m.CostTier {
 	case "local":
-		score += 10
+		score += 20.0
 	case "metered":
-		score += 2
+		score += 10.0
 	default:
-		score += 1
+		score += 5.0
 	}
 
-	// Balance size and complexity
+	// Escalation: prefer external when eligible and headroom OK;
+	// without headroom, heavily demote metered so local wins.
+	if opts.Escalate && !opts.LocalOnly {
+		ok := opts.ExternalOK == nil || opts.ExternalOK(m.ProviderID)
+		if m.CostTier == "metered" {
+			if ok {
+				score += 80.0
+			} else {
+				score -= 200.0
+			}
+		} else if m.CostTier == "local" {
+			score += 5.0
+		}
+	}
+
 	switch class.Complexity {
 	case "trivial", "simple":
-		// Prefer small local models
-		if m.CostTier == "local" && m.Params <= 7 {
-			score += 20
-		} else if m.CostTier == "local" {
-			score += 5
+		if m.Params > 0 && m.Params <= 7 {
+			score += 50.0
+		} else if m.Params == 0 {
+			score += 25.0
+		} else {
+			score += 10.0
 		}
 	case "medium":
-		// Prefer mid-size local or metered
-		if m.CostTier == "local" && m.Params <= 32 {
-			score += 15
-		} else if m.CostTier == "metered" {
-			score += 10
+		if m.Params > 0 && m.Params <= 32 {
+			score += 40.0
+		} else if m.Params == 0 {
+			score += 25.0
+		} else {
+			score += 20.0
 		}
 	case "hard":
-		// Prefer large models, prefer metered for ultimate quality
-		if m.Params >= 70 || m.CostTier == "metered" {
-			score += 20
+		if m.Params >= 32 {
+			score += 50.0
+		} else if m.Params == 0 {
+			score += 25.0
 		} else {
-			score += 5
+			score += 10.0
 		}
 	}
 
-	if m.Context >= 64000 {
-		score += 2
+	if tps, ok := m.Metrics["tps"]; ok {
+		score += tps * 0.5
 	}
+	if p50, ok := m.Metrics["latency_p50"]; ok && p50 > 0 {
+		// Prefer faster models (p50 in ms)
+		bonus := 50.0 - p50/100.0
+		if bonus < 0 {
+			bonus = 0
+		}
+		if bonus > 50 {
+			bonus = 50
+		}
+		score += bonus
+	}
+
 	return score
 }
 
-func pickBest(models []provider.ModelInfo, class classifier.Result) (provider.ModelInfo, bool) {
-	cands := filterModels(models, class)
+func complexityRank(c string) int {
+	switch c {
+	case "trivial":
+		return 0
+	case "simple":
+		return 1
+	case "medium":
+		return 2
+	case "hard":
+		return 3
+	default:
+		return 1
+	}
+}
+
+func ShouldEscalate(complexity, escalateMin string) bool {
+	if escalateMin == "" {
+		escalateMin = "hard"
+	}
+	return complexityRank(complexity) >= complexityRank(escalateMin)
+}
+
+func pickBest(models []provider.ModelInfo, class classifier.Result, opts ScoreOpts) (provider.ModelInfo, bool) {
+	cands := filterModels(models, class, opts)
 	if len(cands) == 0 {
 		return provider.ModelInfo{}, false
 	}
 	best := cands[0]
-	bestScore := scoreModel(best, class)
+	bestScore := scoreModel(best, class, opts)
 	for _, m := range cands[1:] {
-		s := scoreModel(m, class)
+		s := scoreModel(m, class, opts)
 		if s > bestScore {
 			best = m
 			bestScore = s

@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"router/internal/classifier"
+	"router-app/internal/classifier"
 )
 
 func TestGLiNERClassifyOK(t *testing.T) {
@@ -25,6 +25,10 @@ func TestGLiNERClassifyOK(t *testing.T) {
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"results": map[string]any{
+				"category": map[string]any{
+					"label":      "coding",
+					"confidence": 0.88,
+				},
 				"complexity": map[string]any{
 					"label":      "medium",
 					"confidence": 0.91,
@@ -49,7 +53,7 @@ func TestGLiNERClassifyOK(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Complexity != "medium" || !res.NeedsTools || res.Source != "gliner" {
+	if res.Complexity != "medium" || res.Category != "coding" || !res.NeedsTools || res.Source != "gliner" {
 		t.Fatalf("got %+v", res)
 	}
 	if res.Confidence < 0.9 {

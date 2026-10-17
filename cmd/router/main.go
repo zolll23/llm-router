@@ -9,13 +9,13 @@ import (
 	"os/signal"
 	"time"
 
-	"router/internal/api"
-	"router/internal/benchmark"
-	"router/internal/config"
-	"router/internal/eval"
-	"router/internal/provider"
-	"router/internal/router"
-	"router/internal/store"
+	"router-app/internal/api"
+	"router-app/internal/benchmark"
+	"router-app/internal/config"
+	"router-app/internal/eval"
+	"router-app/internal/provider"
+	"router-app/internal/router"
+	"router-app/internal/store"
 )
 
 func main() {
@@ -54,18 +54,26 @@ func main() {
 	}
 
 	reg := provider.NewRegistry()
+	quotas := provider.NewQuotaStore()
+	perf := provider.NewPerfStore()
+	reg.SetPerfStore(perf)
 	for _, pc := range cfg.Providers {
 		p, err := provider.NewFromConfig(pc)
 		if err != nil {
 			log.Fatalf("provider %s: %v", pc.ID, err)
 		}
 		reg.Register(p)
+		if q := provider.NewQuotaFetcherFromConfig(pc); q != nil {
+			quotas.Register(q)
+			log.Printf("quota adapter %s (%s)", pc.ID, pc.Quota)
+		}
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 	_ = reg.Sync(ctx)
 	reg.StartPeriodicSync(ctx, 60*time.Second)
+	quotas.StartPeriodicRefresh(ctx, 60*time.Second)
 
 	stNow := settings.Get()
 	eval.StartScheduler(ctx, db, eval.JudgeConfig{
@@ -106,6 +114,8 @@ func main() {
 		Settings:   settings,
 		UI:         ui,
 		Benchmarks: benchs,
+		Quotas:     quotas,
+		Perf:       perf,
 	}
 	httpSrv := &http.Server{Addr: cfg.Listen, Handler: srv.Handler()}
 	go func() {
@@ -119,3 +129,4 @@ func main() {
 		log.Fatal(err)
 	}
 }
+

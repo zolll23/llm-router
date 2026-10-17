@@ -4,26 +4,30 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
-	"router/internal/benchmark"
-	"router/internal/classifier"
-	"router/internal/config"
-	"router/internal/eval"
-	"router/internal/provider"
-	"router/internal/proxy"
-	"router/internal/router"
-	"router/internal/store"
+	"router-app/internal/benchmark"
+	"router-app/internal/classifier"
+	"router-app/internal/config"
+	"router-app/internal/eval"
+	"router-app/internal/provider"
+	"router-app/internal/proxy"
+	"router-app/internal/router"
+	"router-app/internal/store"
 )
 
 type Server struct {
-	Cfg      *config.Config
-	Reg      *provider.Registry
-	DB       *store.DB
-	Sticky   *router.StickyStore
-	Settings *SettingsStore
-	UI       http.Handler
+	Cfg        *config.Config
+	Reg        *provider.Registry
+	DB         *store.DB
+	Sticky     *router.StickyStore
+	Settings   *SettingsStore
+	UI         http.Handler
 	Benchmarks *benchmark.BenchmarkStore
+	Quotas     *provider.QuotaStore
+	Perf       *provider.PerfStore
 }
 
 func (s *Server) classifier() classifier.Classifier {
@@ -52,18 +56,28 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/models", s.handleModels)
 	mux.HandleFunc("POST /v1/chat/completions", s.handleChat)
 	mux.HandleFunc("GET /api/inventory", s.handleInventory)
+	mux.HandleFunc("GET /api/models", s.handleModelsRich)
+	mux.HandleFunc("GET /api/quotas", s.handleQuotas)
 	mux.HandleFunc("POST /api/inventory/sync", s.handleSync)
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("PUT /api/settings", s.handlePutSettings)
 	mux.HandleFunc("GET /api/stats/overview", s.handleOverview)
+	mux.HandleFunc("GET /api/stats/sankey", s.handleSankey)
 	mux.HandleFunc("GET /api/stats/models/{id...}", s.handleModelDetail)
 	mux.HandleFunc("GET /api/eval/summary", s.handleQuality)
 	mux.HandleFunc("GET /api/eval/confusion", s.handleConfusion)
 	mux.HandleFunc("POST /api/eval/judge-run", s.handleJudgeRun)
 	mux.HandleFunc("POST /api/eval/export-finetune", s.handleExportFinetune)
+	mux.HandleFunc("GET /api/benchmarks/host", s.handleHostHardware)
+	mux.HandleFunc("GET /api/benchmarks/profiles", s.handleHardwareProfiles)
 	mux.HandleFunc("POST /api/benchmarks/recommend", s.handleRecommend)
 	if s.UI != nil {
 		mux.Handle("GET /{$}", s.UI)
+		mux.Handle("GET /usage", s.UI)
+		mux.Handle("GET /quality", s.UI)
+		mux.Handle("GET /models", s.UI)
+		mux.Handle("GET /settings", s.UI)
+		mux.Handle("GET /recommendations", s.UI)
 		mux.Handle("GET /app.js", s.UI)
 		mux.Handle("GET /styles.css", s.UI)
 	}
@@ -92,7 +106,50 @@ func (s *Server) handleInventory(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 	_ = s.Reg.Sync(r.Context())
+	if s.Quotas != nil {
+		s.Quotas.Refresh(r.Context())
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"models": s.Reg.Models()})
+}
+
+func (s *Server) handleModelsRich(w http.ResponseWriter, r *http.Request) {
+	models := s.Reg.Models()
+	out := make([]map[string]any, 0, len(models))
+	for _, m := range models {
+		row := map[string]any{
+			"id":           m.ID(),
+			"provider_id":  m.ProviderID,
+			"upstream_id":  m.UpstreamID,
+			"display_name": m.DisplayName,
+			"cost_tier":    m.CostTier,
+			"routable":     m.Routable,
+			"tools":        m.Tools,
+			"params":       m.Params,
+			"metrics":      m.Metrics,
+			"benchmark_url": "https://huggingface.co/models?search=" +
+				strings.ReplaceAll(m.UpstreamID, ":", "+"),
+		}
+		if m.CostTier == "local" {
+			base := m.UpstreamID
+			if i := strings.Index(base, ":"); i >= 0 {
+				base = base[:i]
+			}
+			row["ollama_url"] = "https://ollama.com/library/" + base
+		}
+		out = append(out, row)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"models": out})
+}
+
+func (s *Server) handleQuotas(w http.ResponseWriter, r *http.Request) {
+	var list []provider.QuotaSnapshot
+	if s.Quotas != nil {
+		list = s.Quotas.All()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"providers":  list,
+		"fetched_at": time.Now().UTC(),
+	})
 }
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
@@ -124,6 +181,21 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, ov)
+}
+
+func (s *Server) handleSankey(w http.ResponseWriter, r *http.Request) {
+	days := 7
+	if v := r.URL.Query().Get("days"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 365 {
+			days = n
+		}
+	}
+	diag, err := s.DB.SankeySince(days)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, diag)
 }
 
 func (s *Server) handleModelDetail(w http.ResponseWriter, r *http.Request) {
@@ -177,14 +249,43 @@ func (s *Server) handleJudgeRun(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"judged": n})
 }
 
+func (s *Server) handleHostHardware(w http.ResponseWriter, r *http.Request) {
+	hw := benchmark.DetectHost()
+	writeJSON(w, http.StatusOK, hw)
+}
+
+func (s *Server) handleHardwareProfiles(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"profiles": benchmark.Profiles(),
+		"default":  benchmark.PresetMacM536,
+	})
+}
+
 func (s *Server) handleRecommend(w http.ResponseWriter, r *http.Request) {
 	var hw benchmark.Hardware
 	if err := json.NewDecoder(r.Body).Decode(&hw); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	recs := s.Benchmarks.Recommend(hw)
-	writeJSON(w, http.StatusOK, map[string]any{"recommendations": recs})
+	if hw.Source == "" {
+		hw.Source = "request"
+	}
+	var inv []provider.ModelInfo
+	if s.Reg != nil {
+		inv = s.Reg.Models()
+	}
+	var load []store.LoadCell
+	var total int64
+	if s.DB != nil {
+		var err error
+		load, total, err = s.DB.LoadProfile(7)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	res := s.Benchmarks.RecommendWithLoad(hw, inv, load, total)
+	writeJSON(w, http.StatusOK, res)
 }
 
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
@@ -199,7 +300,20 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		Classifier: s.classifier(),
 		Sticky:     s.Sticky,
 		DB:         s.DB,
+		Quotas:     s.Quotas,
+		Perf:       s.Perf,
 		KeepAlive:  st.KeepAlive,
+		Settings: func() proxy.RoutingSettings {
+			cur := s.Settings.Get()
+			return proxy.RoutingSettings{
+				EscalateMin:              cur.EscalateMinComplexity,
+				QuotaThresholdRollingPct: cur.QuotaThresholdRollingPct,
+				QuotaThresholdWeeklyPct:  cur.QuotaThresholdWeeklyPct,
+				QuotaThresholdMonthlyPct: cur.QuotaThresholdMonthlyPct,
+				QuotaCooldownSeconds:     cur.QuotaCooldownSeconds,
+				KeepAlive:                cur.KeepAlive,
+			}
+		},
 	}
 	res, err := proxy.ProxyChat(r.Context(), deps, body, r.Header.Clone())
 	if err != nil {

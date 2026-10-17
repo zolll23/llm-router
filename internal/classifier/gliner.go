@@ -48,6 +48,7 @@ func (g *GLiNER) Classify(ctx context.Context, in Input) (Result, error) {
 	reqBody := glinerReq{
 		Text: in.UserText,
 		Tasks: map[string]glinerTask{
+			"category":    {Labels: []string{"coding", "reasoning", "chat", "creative"}},
 			"complexity":  {Labels: []string{"trivial", "simple", "medium", "hard"}},
 			"needs_tools": {Labels: []string{"yes", "no"}},
 		},
@@ -78,11 +79,22 @@ func (g *GLiNER) Classify(ctx context.Context, in Input) (Result, error) {
 	if !ok || comp.Label == "" {
 		return g.Fallback.Classify(ctx, in)
 	}
-	c := strings.ToLower(comp.Label)
-	switch c {
+	c := NormalizeComplexity(comp.Label)
+	switch strings.ToLower(strings.TrimSpace(comp.Label)) {
 	case "trivial", "simple", "medium", "hard":
 	default:
 		return g.Fallback.Classify(ctx, in)
+	}
+	cat := ""
+	if ca, ok := parsed.Results["category"]; ok && ca.Label != "" {
+		cat = NormalizeCategory(ca.Label)
+	}
+	if cat == "" {
+		if fb, err := g.Fallback.Classify(ctx, in); err == nil && fb.Category != "" {
+			cat = NormalizeCategory(fb.Category)
+		} else {
+			cat = "chat"
+		}
 	}
 	needs := in.ToolsPresent
 	if nt, ok := parsed.Results["needs_tools"]; ok {
@@ -97,5 +109,5 @@ func (g *GLiNER) Classify(ctx context.Context, in Input) (Result, error) {
 	if conf == 0 {
 		conf = 0.7
 	}
-	return Result{Complexity: c, NeedsTools: needs, Confidence: conf, Source: "gliner"}, nil
+	return Result{Complexity: c, Category: cat, NeedsTools: needs, Confidence: conf, Source: "gliner"}, nil
 }

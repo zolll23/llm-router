@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"router/internal/store"
+	"router-app/internal/store"
 )
 
 func TestUsageOverview(t *testing.T) {

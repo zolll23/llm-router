@@ -10,3 +10,9 @@ providers:
     type: ollama
     # Docker Desktop: reach Ollama on the host
     base_url: "http://host.docker.internal:11434"
+  - id: opencode-go
+    type: openai_compatible
+    base_url: "https://opencode.ai/zen/go/v1"
+    api_key_env: OPENCODE_API_KEY
+    quota: opencode_go
+

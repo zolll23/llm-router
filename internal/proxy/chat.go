@@ -11,17 +11,29 @@ import (
 	"strings"
 	"time"
 
-	"router/internal/classifier"
-	"router/internal/provider"
-	"router/internal/router"
-	"router/internal/store"
+	"router-app/internal/classifier"
+	"router-app/internal/provider"
+	"router-app/internal/router"
+	"router-app/internal/store"
 )
+
+type RoutingSettings struct {
+	EscalateMin              string
+	QuotaThresholdRollingPct float64
+	QuotaThresholdWeeklyPct  float64
+	QuotaThresholdMonthlyPct float64
+	QuotaCooldownSeconds     int
+	KeepAlive                string
+}
 
 type Deps struct {
 	Reg        *provider.Registry
 	Classifier classifier.Classifier
 	Sticky     *router.StickyStore
 	DB         *store.DB
+	Quotas     *provider.QuotaStore
+	Perf       *provider.PerfStore
+	Settings   func() RoutingSettings
 	KeepAlive  string
 }
 
@@ -42,7 +54,7 @@ type chatRequestMeta struct {
 		Role    string `json:"role"`
 		Content any    `json:"content"`
 	} `json:"messages"`
-	Tools []json.RawMessage `json:"tools"`
+	Tools  []json.RawMessage `json:"tools"`
 	Router *struct {
 		Tier string `json:"tier"`
 	} `json:"router"`
@@ -131,47 +143,92 @@ func ProxyChat(ctx context.Context, d Deps, body []byte, hdr http.Header) (*Chat
 	if err != nil {
 		return nil, err
 	}
+	if class.Category == "" {
+		if fb, ferr := (&classifier.Heuristic{}).Classify(ctx, classIn); ferr == nil {
+			class.Category = fb.Category
+		}
+		if class.Category == "" {
+			class.Category = "chat"
+		}
+	}
+
+	rs := RoutingSettings{EscalateMin: "hard", QuotaCooldownSeconds: 600}
+	if d.Settings != nil {
+		rs = d.Settings()
+	}
+	thr := provider.QuotaThresholds{
+		Rolling: rs.QuotaThresholdRollingPct,
+		Weekly:  rs.QuotaThresholdWeeklyPct,
+		Monthly: rs.QuotaThresholdMonthlyPct,
+	}
+	if thr.Rolling <= 0 {
+		thr = provider.DefaultQuotaThresholds()
+	}
+	extOK := func(pid string) bool {
+		if d.Quotas == nil {
+			return true
+		}
+		return d.Quotas.ExternalOK(pid, thr, time.Now())
+	}
 
 	dec, err := router.Decide(ctx, router.DecideInput{
-		Class:      class,
-		Models:     d.Reg.Models(),
-		SessionKey: session,
-		Sticky:     d.Sticky,
-		ForceTier:  force,
+		Class:       class,
+		Models:      d.Reg.Models(),
+		SessionKey:  session,
+		Sticky:      d.Sticky,
+		ForceTier:   force,
+		EscalateMin: rs.EscalateMin,
+		ExternalOK:  extOK,
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	_, prov, ok := d.Reg.Get(dec.Model.ID())
-	if !ok {
-		return nil, fmt.Errorf("provider missing for %s", dec.Model.ID())
-	}
-	ka := d.KeepAlive
-	if ka == "" && dec.Model.CostTier == "local" {
-		ka = "60m"
-	}
-	rewritten, err := rewriteModel(body, dec.Model.UpstreamID, ka)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := prov.ChatCompletions(ctx, rewritten, hdr)
+	resp, model, dec, err := forwardChat(ctx, d, body, hdr, dec, rs.KeepAlive)
 	if err != nil {
 		return nil, err
 	}
 
+	// On rate limit: cooldown + one retry on best local
+	if resp != nil && resp.StatusCode == http.StatusTooManyRequests && d.Quotas != nil {
+		cd := time.Duration(rs.QuotaCooldownSeconds) * time.Second
+		if cd <= 0 {
+			cd = 10 * time.Minute
+		}
+		d.Quotas.MarkCooldown(model.ProviderID, time.Now().Add(cd))
+		_ = resp.Body.Close()
+		localDec, lerr := router.Decide(ctx, router.DecideInput{
+			Class:       class,
+			Models:      d.Reg.Models(),
+			SessionKey:  session,
+			Sticky:      d.Sticky,
+			ForceTier:   force,
+			EscalateMin: rs.EscalateMin,
+			LocalOnly:   true,
+			ExternalOK:  func(string) bool { return false },
+		})
+		if lerr == nil {
+			resp2, model2, dec2, err2 := forwardChat(ctx, d, body, hdr, localDec, rs.KeepAlive)
+			if err2 == nil {
+				resp, model, dec = resp2, model2, dec2
+			}
+		}
+	}
+
 	res := &ChatResult{
 		Response: resp,
-		Model:    dec.Model,
+		Model:    model,
 		Reason:   dec.Reason,
 		Decision: dec,
 		Class:    class,
 		Session:  session,
 		Usage: store.UsageEvent{
-			ModelID:          dec.Model.ID(),
-			ProviderID:       dec.Model.ProviderID,
+			ModelID:          model.ID(),
+			ProviderID:       model.ProviderID,
 			SessionID:        session,
+			Category:         class.Category,
 			Complexity:       class.Complexity,
+			Pool:             store.PoolLabel(model.ProviderID, model.CostTier),
 			Confidence:       class.Confidence,
 			ClassifierSource: class.Source,
 			HTTPStatus:       resp.StatusCode,
@@ -179,6 +236,29 @@ func ProxyChat(ctx context.Context, d Deps, body []byte, hdr http.Header) (*Chat
 		},
 	}
 	return res, nil
+}
+
+func forwardChat(ctx context.Context, d Deps, body []byte, hdr http.Header, dec router.DecideOutput, keepAlive string) (*http.Response, provider.ModelInfo, router.DecideOutput, error) {
+	_, prov, ok := d.Reg.Get(dec.Model.ID())
+	if !ok {
+		return nil, provider.ModelInfo{}, dec, fmt.Errorf("provider missing for %s", dec.Model.ID())
+	}
+	ka := keepAlive
+	if ka == "" {
+		ka = d.KeepAlive
+	}
+	if ka == "" && dec.Model.CostTier == "local" {
+		ka = "60m"
+	}
+	rewritten, err := rewriteModel(body, dec.Model.UpstreamID, ka)
+	if err != nil {
+		return nil, provider.ModelInfo{}, dec, err
+	}
+	resp, err := prov.ChatCompletions(ctx, rewritten, hdr)
+	if err != nil {
+		return nil, provider.ModelInfo{}, dec, err
+	}
+	return resp, dec.Model, dec, nil
 }
 
 func CopyAndRecord(w http.ResponseWriter, d Deps, res *ChatResult, stateText string) error {
@@ -212,19 +292,25 @@ func CopyAndRecord(w http.ResponseWriter, d Deps, res *ChatResult, stateText str
 		applyUsage(&res.Usage, usage)
 	}
 
+	if d.Perf != nil && res.Usage.LatencyMS > 0 {
+		d.Perf.Observe(res.Model.ID(), int64(res.Usage.LatencyMS), res.Usage.CompletionTokens)
+	}
 	if d.DB != nil {
 		_ = d.DB.InsertUsage(res.Usage)
 		_ = d.DB.InsertRouting(store.RoutingEvent{
 			RequestID:        fmt.Sprintf("%d", time.Now().UnixNano()),
 			SessionID:        res.Session,
 			StateText:        stateText,
+			PredCategory:     res.Class.Category,
 			PredComplexity:   res.Class.Complexity,
 			PredNeedsTools:   res.Class.NeedsTools,
 			PredConfidence:   res.Class.Confidence,
 			ClassifierSource: res.Class.Source,
 			ChosenModel:      res.Model.ID(),
 			CostTier:         res.Model.CostTier,
+			Pool:             store.PoolLabel(res.Model.ProviderID, res.Model.CostTier),
 			Reason:           res.Reason,
+			HTTPStatus:       resp.StatusCode,
 			StickyBreak:      res.Decision.StickyBreak,
 			UserOverride:     res.Decision.UserOverride,
 			LocalSuccess:     res.Model.CostTier == "local" && resp.StatusCode < 400,
@@ -273,8 +359,8 @@ func applyUsage(dst *store.UsageEvent, u usageBits) {
 func parseUsageFromJSON(b []byte) usageBits {
 	var root struct {
 		Usage struct {
-			PromptTokens     int `json:"prompt_tokens"`
-			CompletionTokens int `json:"completion_tokens"`
+			PromptTokens        int `json:"prompt_tokens"`
+			CompletionTokens    int `json:"completion_tokens"`
 			PromptTokensDetails struct {
 				CachedTokens int `json:"cached_tokens"`
 			} `json:"prompt_tokens_details"`

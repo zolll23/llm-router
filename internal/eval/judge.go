@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"router/internal/store"
+	"router-app/internal/store"
 )
 
 type JudgeConfig struct {

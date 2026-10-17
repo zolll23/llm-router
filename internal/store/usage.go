@@ -5,19 +5,21 @@ import (
 )
 
 type UsageEvent struct {
-	TS                int64
-	ModelID           string
-	ProviderID        string
-	PromptTokens      int
-	CachedTokens      int
-	CompletionTokens  int
-	LatencyMS         int
-	SessionID         string
-	Complexity        string
-	Confidence        float64
-	ClassifierSource  string
-	HTTPStatus        int
-	Estimated         bool
+	TS               int64
+	ModelID          string
+	ProviderID       string
+	PromptTokens     int
+	CachedTokens     int
+	CompletionTokens int
+	LatencyMS        int
+	SessionID        string
+	Category         string
+	Complexity       string
+	Pool             string
+	Confidence       float64
+	ClassifierSource string
+	HTTPStatus       int
+	Estimated        bool
 }
 
 type ModelWindowStats struct {
@@ -46,10 +48,10 @@ func (d *DB) InsertUsage(e UsageEvent) error {
 	}
 	_, err := d.SQL.Exec(`
 INSERT INTO usage_events(ts, model_id, provider_id, prompt_tokens, cached_tokens, completion_tokens,
-  latency_ms, session_id, complexity, confidence, classifier_source, http_status, estimated)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  latency_ms, session_id, category, complexity, pool, confidence, classifier_source, http_status, estimated)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		e.TS, e.ModelID, e.ProviderID, e.PromptTokens, e.CachedTokens, e.CompletionTokens,
-		e.LatencyMS, e.SessionID, e.Complexity, e.Confidence, e.ClassifierSource, e.HTTPStatus, est)
+		e.LatencyMS, e.SessionID, e.Category, e.Complexity, e.Pool, e.Confidence, e.ClassifierSource, e.HTTPStatus, est)
 	return err
 }
 

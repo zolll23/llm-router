@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"router/internal/classifier"
+	"router-app/internal/classifier"
 )
 
 func TestNimbleClassify(t *testing.T) {
@@ -17,7 +17,8 @@ func TestNimbleClassify(t *testing.T) {
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"answers": map[string]any{
-				"complexity": map[string]any{"type": "choice", "choice": "medium", "confidence": 0.9},
+				"category":    map[string]any{"type": "choice", "choice": "coding", "confidence": 0.85},
+				"complexity":  map[string]any{"type": "choice", "choice": "medium", "confidence": 0.9},
 				"needs_tools": map[string]any{"type": "noul", "noul": 0.8},
 			},
 		})
@@ -29,7 +30,7 @@ func TestNimbleClassify(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Complexity != "medium" || !res.NeedsTools || res.Source != "nimble" {
+	if res.Complexity != "medium" || res.Category != "coding" || !res.NeedsTools || res.Source != "nimble" {
 		t.Fatalf("%+v", res)
 	}
 }

@@ -3,3 +3,7 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+/data/host_hardware.json
+.env
+.env.*
+!.env.example

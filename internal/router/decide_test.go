@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"router/internal/classifier"
-	"router/internal/provider"
-	"router/internal/router"
+	"router-app/internal/classifier"
+	"router-app/internal/provider"
+	"router-app/internal/router"
 )
 
 func TestDecidePrefersLocalForSimple(t *testing.T) {

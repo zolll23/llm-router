@@ -3,7 +3,7 @@ package provider_test
 import (
 	"testing"
 
-	"router/internal/provider"
+	"router-app/internal/provider"
 )
 
 func TestCanonicalID(t *testing.T) {

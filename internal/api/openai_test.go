@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"router/internal/api"
-	"router/internal/config"
-	"router/internal/provider"
-	"router/internal/router"
-	"router/internal/store"
+	"router-app/internal/api"
+	"router-app/internal/config"
+	"router-app/internal/provider"
+	"router-app/internal/router"
+	"router-app/internal/store"
 )
 
 type stubProvider struct {

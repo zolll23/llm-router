@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"router/internal/proxy"
+	"router-app/internal/proxy"
 )
 
 func TestRewriteInjectsUsage(t *testing.T) {

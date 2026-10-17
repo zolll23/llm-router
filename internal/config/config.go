@@ -15,6 +15,8 @@ type ProviderConfig struct {
 	APIKeyEnv  string `yaml:"api_key_env"`
 	ConfigPath string `yaml:"config_path"`
 	Command    string `yaml:"command"`
+	// Quota selects optional limit adapter: opencode_go | ollama_balance | none/empty
+	Quota string `yaml:"quota"`
 }
 
 type Config struct {

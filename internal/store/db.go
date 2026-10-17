@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	_ "modernc.org/sqlite"
 )
@@ -84,7 +85,65 @@ CREATE TABLE IF NOT EXISTS judge_labels (
 	if err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
+	for _, col := range []struct {
+		table, name, decl string
+	}{
+		{"usage_events", "category", "TEXT"},
+		{"usage_events", "pool", "TEXT"},
+		{"routing_events", "pred_category", "TEXT"},
+		{"routing_events", "pool", "TEXT"},
+		{"routing_events", "http_status", "INTEGER"},
+	} {
+		if err := d.addColumnIfMissing(col.table, col.name, col.decl); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
+func (d *DB) addColumnIfMissing(table, name, decl string) error {
+	rows, err := d.SQL.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var colName, colType string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &colName, &colType, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if strings.EqualFold(colName, name) {
+			return nil
+		}
+	}
+	_, err = d.SQL.Exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, table, name, decl))
+	return err
+}
+
 func (d *DB) Close() error { return d.SQL.Close() }
+
+// PoolLabel builds a human pool name like "ollama · local".
+func PoolLabel(providerID, costTier string) string {
+	if providerID == "" {
+		providerID = "unknown"
+	}
+	if costTier == "" {
+		costTier = "unknown"
+	}
+	return providerID + " · " + costTier
+}
+
+// StatusLabel maps HTTP status to a Sankey terminal node.
+func StatusLabel(httpStatus int) string {
+	switch {
+	case httpStatus == 429:
+		return "лимит"
+	case httpStatus >= 200 && httpStatus < 400:
+		return "успех"
+	default:
+		return "ошибка"
+	}
+}

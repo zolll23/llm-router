@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"router/internal/store"
+	"router-app/internal/store"
 )
 
 type FinetuneRow struct {

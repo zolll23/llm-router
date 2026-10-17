@@ -7,3 +7,16 @@ providers:
   - id: ollama
     type: ollama
     base_url: "http://127.0.0.1:11434"
+  # OpenCode Go (external) — set OPENCODE_API_KEY and uncomment:
+  # - id: opencode-go
+  #   type: openai_compatible
+  #   base_url: "https://opencode.ai/zen/go/v1"
+  #   api_key_env: OPENCODE_API_KEY
+  #   quota: opencode_go
+  # Ollama Cloud balance (optional):
+  # - id: ollama-cloud
+  #   type: ollama
+  #   base_url: "http://127.0.0.1:11434"
+  #   api_key_env: OLLAMA_API_KEY
+  #   quota: ollama_balance
+

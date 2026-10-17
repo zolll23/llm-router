@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"router/internal/provider"
+	"router-app/internal/provider"
 )
 
 func TestOllamaListModels(t *testing.T) {

@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"router/internal/config"
+	"router-app/internal/config"
 )
 
 func isLoopbackAddr(addr string) bool {
@@ -30,7 +30,8 @@ func tokenForAPI(cfg *config.Config) string {
 
 func isPublicPath(path string) bool {
 	switch path {
-	case "/health", "/", "/index.html", "/app.js", "/styles.css":
+	case "/health", "/", "/index.html", "/usage", "/quality", "/models",
+		"/settings", "/recommendations", "/app.js", "/styles.css":
 		return true
 	default:
 		return false

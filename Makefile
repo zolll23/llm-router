@@ -2,7 +2,7 @@ BINARY ?= bin/router
 CMD    ?= ./cmd/router
 CONFIG ?= configs/config.example.yaml
 
-.PHONY: help about build build-relay run run-blue run-green relay switch-blue switch-green test docker-up docker-down docker-logs
+.PHONY: help about build build-relay run run-blue run-green relay switch-blue switch-green test detect-host docker-up docker-down docker-logs
 
 .DEFAULT_GOAL := help
 
@@ -43,7 +43,10 @@ switch-green: ## Switch relay to green (8082)
 test: ## Run all Go tests
 	go test ./...
 
-docker-up: ## Build and start router + GLiNER via compose
+detect-host: ## Probe host CPU/RAM (macOS/Linux) → data/host_hardware.json
+	@bash scripts/detect-host.sh
+
+docker-up: detect-host ## Detect host HW, then build/start router + GLiNER
 	docker compose up --build -d
 
 docker-down: ## Stop compose stack

@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"router/internal/api"
-	"router/internal/config"
+	"router-app/internal/api"
+	"router-app/internal/config"
 )
 
 func TestUIHandlerServesIndex(t *testing.T) {
@@ -45,5 +45,27 @@ func TestServerServesUIRoot(t *testing.T) {
 	s.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("GET / via Server -> %d loc=%q", rr.Code, rr.Header().Get("Location"))
+	}
+}
+
+func TestServerServesSPARoutes(t *testing.T) {
+	ui, err := api.UIHandler()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &api.Server{
+		Cfg: &config.Config{Listen: "127.0.0.1:8080", VirtualModel: "auto"},
+		UI:  ui,
+	}
+	for _, path := range []string{"/usage", "/quality", "/models", "/settings"} {
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		s.Handler().ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("GET %s -> %d", path, rr.Code)
+		}
+		if !strings.Contains(rr.Body.String(), "data-tab") {
+			t.Fatalf("GET %s: expected SPA html", path)
+		}
 	}
 }

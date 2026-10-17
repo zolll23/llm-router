@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"router/internal/config"
+	"router-app/internal/config"
 )
 
 type Registry struct {
@@ -15,6 +15,7 @@ type Registry struct {
 	providers map[string]Provider
 	models    []ModelInfo
 	byID      map[string]ModelInfo
+	perf      *PerfStore
 }
 
 func NewRegistry() *Registry {
@@ -22,6 +23,12 @@ func NewRegistry() *Registry {
 		providers: map[string]Provider{},
 		byID:      map[string]ModelInfo{},
 	}
+}
+
+func (r *Registry) SetPerfStore(p *PerfStore) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.perf = p
 }
 
 func (r *Registry) Register(p Provider) {
@@ -66,6 +73,12 @@ func (r *Registry) Sync(ctx context.Context) error {
 			continue
 		}
 		for _, m := range models {
+			if m.Params == 0 {
+				m.Params = EstimateParamsFromName(m.UpstreamID)
+				if m.Params == 0 {
+					m.Params = EstimateParamsFromName(m.DisplayName)
+				}
+			}
 			all = append(all, m)
 			byID[m.ID()] = m
 		}
@@ -97,6 +110,12 @@ func (r *Registry) Models() []ModelInfo {
 	defer r.mu.RUnlock()
 	out := make([]ModelInfo, len(r.models))
 	copy(out, r.models)
+	perf := r.perf
+	if perf != nil {
+		for i := range out {
+			perf.Apply(&out[i])
+		}
+	}
 	return out
 }
 
@@ -110,6 +129,9 @@ func (r *Registry) Get(canonicalID string) (ModelInfo, Provider, bool) {
 	p, ok := r.providers[m.ProviderID]
 	if !ok {
 		return ModelInfo{}, nil, false
+	}
+	if r.perf != nil {
+		r.perf.Apply(&m)
 	}
 	return m, p, true
 }
