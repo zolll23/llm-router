@@ -76,14 +76,17 @@ GROUP BY 1, 2, 3, 4, 5
 		}
 		status := StatusLabel(statusCode)
 		total += n
+		// Scope complexity/pool by category so chat vs coding never merge mid-diagram.
 		catID := "cat:" + cat
-		cxID := "cx:" + cx
-		poolID := "pool:" + pool
+		cxID := "cx:" + cat + ":" + cx
+		cxName := cat + " · " + cx
+		poolID := "pool:" + cat + ":" + pool
+		poolName := cat + " · " + pool
 		modelID := "model:" + model
 		stID := "status:" + status
-		addLink(catID, cat, "category", cxID, cx, "complexity", n)
-		addLink(cxID, cx, "complexity", poolID, pool, "pool", n)
-		addLink(poolID, pool, "pool", modelID, model, "model", n)
+		addLink(catID, cat, "category", cxID, cxName, "complexity", n)
+		addLink(cxID, cxName, "complexity", poolID, poolName, "pool", n)
+		addLink(poolID, poolName, "pool", modelID, model, "model", n)
 		addLink(modelID, model, "model", stID, status, "status", n)
 	}
 	if err := rows.Err(); err != nil {

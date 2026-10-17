@@ -40,11 +40,26 @@ func TestSankeySince(t *testing.T) {
 	}
 	var codingSimple int64
 	for _, l := range diag.Links {
-		if l.Source == "cat:coding" && l.Target == "cx:simple" {
+		if l.Source == "cat:coding" && l.Target == "cx:coding:simple" {
 			codingSimple = l.Value
 		}
 	}
 	if codingSimple != 2 {
 		t.Fatalf("coding→simple want 2 got %d links=%+v", codingSimple, diag.Links)
+	}
+	// chat and coding must not share a complexity node
+	for _, n := range diag.Nodes {
+		if n.Stage == "complexity" && n.ID == "cx:simple" {
+			t.Fatalf("unscoped complexity node still present: %+v", n)
+		}
+	}
+	var codingToModel int64
+	for _, l := range diag.Links {
+		if l.Source == "pool:coding:ollama · local" && l.Target == "model:ollama/llama" {
+			codingToModel = l.Value
+		}
+	}
+	if codingToModel != 2 {
+		t.Fatalf("coding pool→model want 2 got %d", codingToModel)
 	}
 }
