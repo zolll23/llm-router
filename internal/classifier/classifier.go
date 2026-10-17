@@ -11,9 +11,10 @@ type Input struct {
 
 type Result struct {
 	Complexity string  // trivial|simple|medium|hard
+	Category   string  // coding|reasoning|chat|creative
 	NeedsTools bool
 	Confidence float64
-	Source     string // nimble|heuristic
+	Source     string // gliner|nimble|heuristic
 }
 
 type Classifier interface {

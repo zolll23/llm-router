@@ -21,6 +21,15 @@ func filterModels(models []provider.ModelInfo, class classifier.Result) []provid
 
 func scoreModel(m provider.ModelInfo, class classifier.Result) float64 {
 	score := 0.0
+
+	// Capability alignment
+	for _, cap := range m.Capabilities {
+		if cap == class.Category {
+			score += 30.0
+		}
+	}
+
+	// Cost and efficiency
 	switch m.CostTier {
 	case "local":
 		score += 10
@@ -29,24 +38,32 @@ func scoreModel(m provider.ModelInfo, class classifier.Result) float64 {
 	default:
 		score += 1
 	}
+
+	// Balance size and complexity
 	switch class.Complexity {
 	case "trivial", "simple":
-		if m.CostTier == "local" {
+		// Prefer small local models
+		if m.CostTier == "local" && m.Params <= 7 {
 			score += 20
+		} else if m.CostTier == "local" {
+			score += 5
 		}
 	case "medium":
-		if m.CostTier == "local" {
-			score += 8
+		// Prefer mid-size local or metered
+		if m.CostTier == "local" && m.Params <= 32 {
+			score += 15
+		} else if m.CostTier == "metered" {
+			score += 10
+		}
+	case "hard":
+		// Prefer large models, prefer metered for ultimate quality
+		if m.Params >= 70 || m.CostTier == "metered" {
+			score += 20
 		} else {
 			score += 5
 		}
-	case "hard":
-		if m.CostTier != "local" {
-			score += 12
-		} else {
-			score += 3
-		}
 	}
+
 	if m.Context >= 64000 {
 		score += 2
 	}

@@ -11,7 +11,35 @@ func (h *Heuristic) Classify(ctx context.Context, in Input) (Result, error) {
 	_ = ctx
 	text := strings.ToLower(in.UserText)
 	complexity := "simple"
+	category := "chat"
 	conf := 0.55
+
+	codingHints := []string{"code", "python", "go", "rust", "javascript", "typescript", "sql", "html", "css", "api", "implement", "debug", "fix", "test", "код", "программирование", "реализ", "исправ", "тест"}
+	reasoningHints := []string{"prove", "logic", "math", "solve", "why", "reason", "analyze", "докажи", "логика", "почему", "анализ"}
+	creativeHints := []string{"write a story", "poem", "creative", "imagine", "напиши рассказ", "стихотворение", "придумай"}
+
+	for _, h := range codingHints {
+		if strings.Contains(text, h) {
+			category = "coding"
+			break
+		}
+	}
+	if category == "chat" {
+		for _, h := range reasoningHints {
+			if strings.Contains(text, h) {
+				category = "reasoning"
+				break
+			}
+		}
+	}
+	if category == "chat" {
+		for _, h := range creativeHints {
+			if strings.Contains(text, h) {
+				category = "creative"
+				break
+			}
+		}
+	}
 
 	hardHints := []string{"architect", "refactor", "migrate", "prove", "design system", "distributed", "оптимиз", "архитектур", "рефактор"}
 	mediumHints := []string{"implement", "debug", "fix", "test", "explain", "реализ", "исправ", "тест"}
@@ -41,5 +69,5 @@ func (h *Heuristic) Classify(ctx context.Context, in Input) (Result, error) {
 	if !needs {
 		needs = strings.Contains(text, "tool") || strings.Contains(text, "edit file") || strings.Contains(text, "файл")
 	}
-	return Result{Complexity: complexity, NeedsTools: needs, Confidence: conf, Source: "heuristic"}, nil
+	return Result{Complexity: complexity, Category: category, NeedsTools: needs, Confidence: conf, Source: "heuristic"}, nil
 }

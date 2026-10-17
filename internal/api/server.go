@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"router/internal/benchmark"
 	"router/internal/classifier"
 	"router/internal/config"
 	"router/internal/eval"
@@ -22,6 +23,7 @@ type Server struct {
 	Sticky   *router.StickyStore
 	Settings *SettingsStore
 	UI       http.Handler
+	Benchmarks *benchmark.BenchmarkStore
 }
 
 func (s *Server) classifier() classifier.Classifier {
@@ -29,12 +31,18 @@ func (s *Server) classifier() classifier.Classifier {
 	switch st.Classifier {
 	case "heuristic":
 		return &classifier.Heuristic{}
-	default:
+	case "nimble":
 		base := st.NimbleBaseURL
 		if base == "" {
 			base = "http://127.0.0.1:11434"
 		}
 		return classifier.NewNimble(base, st.NimbleModel, &classifier.Heuristic{})
+	default: // gliner
+		base := st.GLiNERBaseURL
+		if base == "" {
+			base = "http://127.0.0.1:8090"
+		}
+		return classifier.NewGLiNER(base, &classifier.Heuristic{})
 	}
 }
 
@@ -53,6 +61,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/eval/confusion", s.handleConfusion)
 	mux.HandleFunc("POST /api/eval/judge-run", s.handleJudgeRun)
 	mux.HandleFunc("POST /api/eval/export-finetune", s.handleExportFinetune)
+	mux.HandleFunc("POST /api/benchmarks/recommend", s.handleRecommend)
 	if s.UI != nil {
 		mux.Handle("GET /{$}", s.UI)
 		mux.Handle("GET /app.js", s.UI)
@@ -166,6 +175,16 @@ func (s *Server) handleJudgeRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"judged": n})
+}
+
+func (s *Server) handleRecommend(w http.ResponseWriter, r *http.Request) {
+	var hw benchmark.Hardware
+	if err := json.NewDecoder(r.Body).Decode(&hw); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	recs := s.Benchmarks.Recommend(hw)
+	writeJSON(w, http.StatusOK, map[string]any{"recommendations": recs})
 }
 
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {

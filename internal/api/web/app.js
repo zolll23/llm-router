@@ -1,5 +1,26 @@
 const tabs = document.querySelectorAll("nav button");
 const sections = document.querySelectorAll(".tab");
+
+function apiToken() {
+  return localStorage.getItem("router_token") || "local";
+}
+
+async function api(path, opts = {}) {
+  const headers = Object.assign({}, opts.headers || {});
+  headers.Authorization = "Bearer " + apiToken();
+  if (opts.body && !headers["Content-Type"]) {
+    headers["Content-Type"] = "application/json";
+  }
+  const r = await fetch(path, Object.assign({}, opts, { headers }));
+  if (!r.ok) {
+    const text = await r.text();
+    throw new Error(text || r.statusText);
+  }
+  const ct = r.headers.get("content-type") || "";
+  if (ct.includes("application/json")) return r.json();
+  return r.text();
+}
+
 tabs.forEach((btn) => {
   btn.addEventListener("click", () => {
     tabs.forEach((b) => b.classList.remove("active"));
@@ -8,6 +29,7 @@ tabs.forEach((btn) => {
     document.getElementById(btn.dataset.tab).classList.add("active");
     if (btn.dataset.tab === "usage") loadOverview();
     if (btn.dataset.tab === "quality") loadQuality();
+    if (btn.dataset.tab === "recommendations") loadRecs();
     if (btn.dataset.tab === "settings") loadSettings();
   });
 });
@@ -21,8 +43,26 @@ function cell(w) {
   return `<td>${fmt(w.prompt_tokens)} / ${fmt(w.cached_tokens)} / ${fmt(w.completion_tokens)} / ${fmt(w.requests)} / ${Number(w.share_pct || 0).toFixed(1)}%</td>`;
 }
 
+async function loadRecs() {
+  const vram = document.getElementById("rec-vram").value;
+  const ram = document.getElementById("rec-ram").value;
+  const res = await api("/api/benchmarks/recommend", {
+    method: "POST",
+    body: JSON.stringify({ vram: Number(vram), ram: Number(ram) }),
+  });
+  const recs = res.recommendations || [];
+  let html = `<table><thead><tr><th>Модель</th><th>Параметры (B)</th></tr></thead><tbody>`;
+  for (const m of recs) {
+    html += `<tr><td>${m.DisplayName}</td><td>${m.Params}</td></tr>`;
+  }
+  html += `</tbody></table>`;
+  document.getElementById("rec-results").innerHTML = html || "<p>Подходящих моделей не найдено</p>";
+}
+
+document.getElementById("rec-btn").addEventListener("click", loadRecs);
+
 async function loadOverview() {
-  const ov = await fetch("/api/stats/overview").then((r) => r.json());
+  const ov = await api("/api/stats/overview");
   const byId = {};
   for (const row of ov.day || []) byId[row.ModelID || row.model_id] = { day: row };
   // Go json encodes exported fields as-is (ModelID). Normalize:
@@ -57,7 +97,7 @@ async function loadOverview() {
 }
 
 async function loadDetail(id) {
-  const d = await fetch("/api/stats/models/" + encodeURIComponent(id)).then((r) => r.json());
+  const d = await api("/api/stats/models/" + encodeURIComponent(id));
   const lat = d.latency || {};
   document.getElementById("detail").innerHTML = `
     <h3>${id}</h3>
@@ -66,21 +106,56 @@ async function loadDetail(id) {
 }
 
 async function loadQuality() {
-  const q = await fetch("/api/eval/summary").then((r) => r.json());
-  const c = await fetch("/api/eval/confusion").then((r) => r.json());
-  document.getElementById("quality-box").textContent =
-    JSON.stringify({ summary: q, confusion: c }, null, 2);
+  const q = await api("/api/eval/summary");
+  const c = await api("/api/eval/confusion");
+
+  document.getElementById("quality-summary").innerHTML = `
+    <table>
+      <thead>
+        <tr><th>Метрика</th><th>Значение</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Всего запросов</td><td>${fmt(q.total)}</td></tr>
+        <tr><td>Local share</td><td>${Number(q.local_share_pct || 0).toFixed(1)}%</td></tr>
+        <tr><td>Escalations</td><td>${fmt(q.escalations)}</td></tr>
+        <tr><td>Overrides</td><td>${fmt(q.overrides)}</td></tr>
+        <tr><td>Sticky breaks</td><td>${fmt(q.sticky_breaks)}</td></tr>
+      </tbody>
+    </table>`;
+
+  const labels = c.labels || [];
+  const matrix = c.matrix || [];
+  if (!labels.length) {
+    document.getElementById("quality-confusion").innerHTML = "<p>Нет данных judge за период</p>";
+    return;
+  }
+  let html = `<table><thead><tr><th>pred \\ gold</th>`;
+  for (const label of labels) {
+    html += `<th>${label}</th>`;
+  }
+  html += `</tr></thead><tbody>`;
+  for (let i = 0; i < labels.length; i++) {
+    html += `<tr><th scope="row">${labels[i]}</th>`;
+    for (let j = 0; j < labels.length; j++) {
+      const v = (matrix[i] && matrix[i][j]) || 0;
+      html += `<td${i === j ? ' class="diag"' : ""}>${fmt(v)}</td>`;
+    }
+    html += `</tr>`;
+  }
+  html += `</tbody></table>`;
+  document.getElementById("quality-confusion").innerHTML = html;
 }
 
 async function loadSettings() {
-  const st = await fetch("/api/settings").then((r) => r.json());
+  const st = await api("/api/settings");
   const form = document.getElementById("settings-form");
-  form.classifier.value = st.classifier || "nimble";
+  form.classifier.value = st.classifier || "gliner";
+  form.gliner_base_url.value = st.gliner_base_url || "http://127.0.0.1:8090";
   form.nimble_model.value = st.nimble_model || "";
   form.nimble_base_url.value = st.nimble_base_url || "";
   form.sticky_ttl_minutes.value = st.sticky_ttl_minutes || 30;
   form.keep_alive.value = st.keep_alive || "60m";
-  const inv = await fetch("/api/inventory").then((r) => r.json());
+  const inv = await api("/api/inventory");
   document.getElementById("inventory").textContent = JSON.stringify(inv, null, 2);
 }
 
@@ -89,23 +164,24 @@ document.getElementById("settings-form").addEventListener("submit", async (e) =>
   const f = e.target;
   const body = {
     classifier: f.classifier.value,
+    gliner_base_url: f.gliner_base_url.value,
     nimble_model: f.nimble_model.value,
     nimble_base_url: f.nimble_base_url.value,
     sticky_ttl_minutes: Number(f.sticky_ttl_minutes.value || 30),
     keep_alive: f.keep_alive.value,
     confidence_min: 0.4,
   };
-  await fetch("/api/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  await api("/api/settings", { method: "PUT", body: JSON.stringify(body) });
   await loadSettings();
 });
 
 document.getElementById("sync-btn").addEventListener("click", async () => {
-  await fetch("/api/inventory/sync", { method: "POST" });
+  await api("/api/inventory/sync", { method: "POST" });
   await loadSettings();
 });
 
 document.getElementById("judge-btn").addEventListener("click", async () => {
-  const r = await fetch("/api/eval/judge-run", { method: "POST" }).then((x) => x.json());
+  const r = await api("/api/eval/judge-run", { method: "POST" });
   alert("Judged: " + (r.judged ?? 0));
   await loadQuality();
 });

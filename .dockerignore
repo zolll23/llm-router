@@ -1,0 +1,8 @@
+bin/
+.git/
+**/.venv/
+**/__pycache__/
+**/*.pyc
+docs/
+*.md
+.DS_Store

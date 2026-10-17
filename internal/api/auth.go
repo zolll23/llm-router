@@ -28,6 +28,15 @@ func tokenForAPI(cfg *config.Config) string {
 	return cfg.AdminToken
 }
 
+func isPublicPath(path string) bool {
+	switch path {
+	case "/health", "/", "/index.html", "/app.js", "/styles.css":
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Server) wrapAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if isLoopbackAddr(s.Cfg.Listen) {
@@ -35,12 +44,13 @@ func (s *Server) wrapAuth(next http.Handler) http.Handler {
 			return
 		}
 		path := r.URL.Path
+		if isPublicPath(path) {
+			next.ServeHTTP(w, r)
+			return
+		}
 		need := ""
 		if strings.HasPrefix(path, "/v1/") {
 			need = tokenForAPI(s.Cfg)
-		} else if path == "/health" {
-			next.ServeHTTP(w, r)
-			return
 		} else {
 			need = s.Cfg.AdminToken
 		}

@@ -17,6 +17,8 @@ type ModelInfo struct {
 	Vision      bool
 	Context     int
 	CostTier    string // local | metered | unknown
+	Capabilities []string // coding, reasoning, general, creative
+	Params      int      // size in billions (e.g. 7, 70)
 }
 
 func CanonicalID(providerID, upstreamID string) string {

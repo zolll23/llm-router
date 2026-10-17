@@ -1,0 +1,12 @@
+listen: "0.0.0.0:8080"
+virtual_model: auto
+data_dir: "/data"
+# Required when listen is not loopback. Local compose default:
+admin_token: local
+api_token: local
+
+providers:
+  - id: ollama
+    type: ollama
+    # Docker Desktop: reach Ollama on the host
+    base_url: "http://host.docker.internal:11434"

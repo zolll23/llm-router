@@ -1,0 +1,6 @@
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
+# torch is installed from the CPU wheel index in the Dockerfile
+gliner2>=2.1.0,<3
+transformers>=4.43,<6
+pydantic>=2.8,<3

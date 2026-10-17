@@ -14,11 +14,7 @@ func UIHandler() (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	fileServer := http.FileServer(http.FS(sub))
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/" {
-			r.URL.Path = "/index.html"
-		}
-		fileServer.ServeHTTP(w, r)
-	}), nil
+	// Serve "/" directly. Rewriting to "/index.html" makes http.FileServer
+	// issue a 301 Location: ./ redirect loop with embed/fs.FS.
+	return http.FileServer(http.FS(sub)), nil
 }

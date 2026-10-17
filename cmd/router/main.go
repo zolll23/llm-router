@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"router/internal/api"
+	"router/internal/benchmark"
 	"router/internal/config"
 	"router/internal/eval"
 	"router/internal/provider"
@@ -19,10 +20,14 @@ import (
 
 func main() {
 	cfgPath := flag.String("config", "configs/config.example.yaml", "config path")
+	portOverride := flag.String("port", "", "override port")
 	flag.Parse()
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
 		log.Fatal(err)
+	}
+	if *portOverride != "" {
+		cfg.Listen = *portOverride
 	}
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
 		log.Fatal(err)
@@ -73,13 +78,34 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	benchs := benchmark.NewStore("") // Use a real URL in production
+	if err := benchs.Update(); err != nil {
+		log.Printf("initial benchmark update failed: %v", err)
+	}
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := benchs.Update(); err != nil {
+					log.Printf("periodic benchmark update failed: %v", err)
+				}
+			}
+		}
+	}()
+
 	srv := &api.Server{
-		Cfg:      cfg,
-		Reg:      reg,
-		DB:       db,
-		Sticky:   router.NewStickyStore(ttl),
-		Settings: settings,
-		UI:       ui,
+		Cfg:        cfg,
+		Reg:        reg,
+		DB:         db,
+		Sticky:     router.NewStickyStore(ttl),
+		Settings:   settings,
+		UI:         ui,
+		Benchmarks: benchs,
 	}
 	httpSrv := &http.Server{Addr: cfg.Listen, Handler: srv.Handler()}
 	go func() {

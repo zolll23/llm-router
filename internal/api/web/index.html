@@ -4,37 +4,68 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Router</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-  <header>
-    <h1>Router</h1>
-    <nav>
-      <button data-tab="usage" class="active">Usage</button>
-      <button data-tab="quality">Качество</button>
-      <button data-tab="settings">Настройки</button>
-    </nav>
+  <header class="container-fluid">
+    <div class="header-row">
+      <h1>Router</h1>
+      <nav>
+        <ul>
+          <li><button type="button" data-tab="usage" class="outline active">Usage</button></li>
+          <li><button type="button" data-tab="quality" class="outline">Качество</button></li>
+          <li><button type="button" data-tab="recommendations" class="outline">Модели</button></li>
+          <li><button type="button" data-tab="settings" class="outline">Настройки</button></li>
+        </ul>
+      </nav>
+    </div>
   </header>
-  <main>
+  <main class="container">
     <section id="usage" class="tab active">
       <h2>Расход по моделям</h2>
-      <div id="overview"></div>
+      <div id="overview" class="table-wrap"></div>
       <div id="detail"></div>
     </section>
     <section id="quality" class="tab">
       <h2>Качество роутинга (7 дней)</h2>
-      <button id="judge-btn" type="button">Запустить AI-judge сейчас</button>
-      <pre id="quality-box"></pre>
+      <p>
+        <button id="judge-btn" type="button">Запустить AI-judge сейчас</button>
+      </p>
+      <h3>Сводка</h3>
+      <div id="quality-summary" class="table-wrap"></div>
+      <h3>Confusion matrix</h3>
+      <p class="hint">Строки — predicted, столбцы — gold (judge).</p>
+      <div id="quality-confusion" class="table-wrap"></div>
+    </section>
+    <section id="recommendations" class="tab">
+      <h2>Рекомендации по моделям</h2>
+      <div id="rec-form">
+        <div class="grid">
+          <label>
+            VRAM (GB)
+            <input id="rec-vram" type="number" value="12" />
+          </label>
+          <label>
+            RAM (GB)
+            <input id="rec-ram" type="number" value="32" />
+          </label>
+          <button id="rec-btn" type="button">Подобрать</button>
+        </div>
+      </div>
+      <div id="rec-results" class="table-wrap"></div>
     </section>
     <section id="settings" class="tab">
       <h2>Настройки</h2>
       <form id="settings-form">
         <label>Classifier
           <select name="classifier">
+            <option value="gliner">GLiNER2.5</option>
             <option value="nimble">nimble</option>
             <option value="heuristic">heuristic</option>
           </select>
         </label>
+        <label>GLiNER base URL <input name="gliner_base_url" /></label>
         <label>Nimble model <input name="nimble_model" /></label>
         <label>Nimble base URL <input name="nimble_base_url" /></label>
         <label>Sticky TTL (min) <input name="sticky_ttl_minutes" type="number" /></label>
@@ -42,7 +73,7 @@
         <button type="submit">Сохранить</button>
       </form>
       <h3>Inventory</h3>
-      <button id="sync-btn" type="button">Sync now</button>
+      <p><button id="sync-btn" type="button" class="secondary">Sync now</button></p>
       <pre id="inventory"></pre>
     </section>
   </main>
