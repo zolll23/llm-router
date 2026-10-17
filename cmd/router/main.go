@@ -15,6 +15,7 @@ import (
 	"router-app/internal/eval"
 	"router-app/internal/provider"
 	"router-app/internal/router"
+	"router-app/internal/scheduler"
 	"router-app/internal/store"
 )
 
@@ -56,7 +57,10 @@ func main() {
 	reg := provider.NewRegistry()
 	quotas := provider.NewQuotaStore()
 	perf := provider.NewPerfStore()
+	schedulers := scheduler.NewRegistry()
 	reg.SetPerfStore(perf)
+	hw := benchmark.DetectHost()
+	budgetGB := scheduler.HostBudgetGB(hw.RAMGB, hw.VRAMGB, hw.Unified || hw.PreferMLX || hw.Arch == "apple_silicon")
 	for _, pc := range cfg.Providers {
 		p, err := provider.NewFromConfig(pc)
 		if err != nil {
@@ -66,6 +70,13 @@ func main() {
 		if q := provider.NewQuotaFetcherFromConfig(pc); q != nil {
 			quotas.Register(q)
 			log.Printf("quota adapter %s (%s)", pc.ID, pc.Quota)
+		}
+		if pc.Type == "ollama" && pc.BaseURL != "" {
+			base := pc.BaseURL
+			schedulers.Register(pc.ID, scheduler.NewLocal(budgetGB, func(ctx context.Context) (map[string]float64, error) {
+				return provider.FetchOllamaPS(ctx, base)
+			}))
+			log.Printf("local scheduler %s budget=%.0fGB", pc.ID, budgetGB)
 		}
 	}
 
@@ -116,6 +127,7 @@ func main() {
 		Benchmarks: benchs,
 		Quotas:     quotas,
 		Perf:       perf,
+		Schedulers: schedulers,
 	}
 	httpSrv := &http.Server{Addr: cfg.Listen, Handler: srv.Handler()}
 	go func() {

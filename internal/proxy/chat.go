@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"router-app/internal/classifier"
 	"router-app/internal/provider"
 	"router-app/internal/router"
+	"router-app/internal/scheduler"
 	"router-app/internal/store"
 )
 
@@ -24,6 +26,8 @@ type RoutingSettings struct {
 	QuotaThresholdMonthlyPct float64
 	QuotaCooldownSeconds     int
 	KeepAlive                string
+	LocalQueueMax            int
+	LocalQueueRedirect       bool
 }
 
 type Deps struct {
@@ -33,18 +37,21 @@ type Deps struct {
 	DB         *store.DB
 	Quotas     *provider.QuotaStore
 	Perf       *provider.PerfStore
+	Schedulers *scheduler.Registry
 	Settings   func() RoutingSettings
 	KeepAlive  string
 }
 
 type ChatResult struct {
-	Response *http.Response
-	Model    provider.ModelInfo
-	Reason   string
-	Decision router.DecideOutput
-	Class    classifier.Result
-	Session  string
-	Usage    store.UsageEvent
+	Response    *http.Response
+	Model       provider.ModelInfo
+	Reason      string
+	Decision    router.DecideOutput
+	Class       classifier.Result
+	Session     string
+	Usage       store.UsageEvent
+	QueueWaitMS int64
+	Release     func()
 }
 
 type chatRequestMeta struct {
@@ -152,7 +159,7 @@ func ProxyChat(ctx context.Context, d Deps, body []byte, hdr http.Header) (*Chat
 		}
 	}
 
-	rs := RoutingSettings{EscalateMin: "hard", QuotaCooldownSeconds: 600}
+	rs := RoutingSettings{EscalateMin: "hard", QuotaCooldownSeconds: 600, LocalQueueMax: 8}
 	if d.Settings != nil {
 		rs = d.Settings()
 	}
@@ -170,6 +177,14 @@ func ProxyChat(ctx context.Context, d Deps, body []byte, hdr http.Header) (*Chat
 		}
 		return d.Quotas.ExternalOK(pid, thr, time.Now())
 	}
+	anyExtOK := func() bool {
+		for _, m := range d.Reg.Models() {
+			if m.CostTier == "metered" && m.Routable && extOK(m.ProviderID) {
+				return true
+			}
+		}
+		return false
+	}
 
 	dec, err := router.Decide(ctx, router.DecideInput{
 		Class:       class,
@@ -184,13 +199,57 @@ func ProxyChat(ctx context.Context, d Deps, body []byte, hdr http.Header) (*Chat
 		return nil, err
 	}
 
+	var queueWait int64
+	var release func()
+	reason := dec.Reason
+
+	if dec.Model.CostTier == "local" && d.Schedulers != nil {
+		if sched := d.Schedulers.Get(dec.Model.ProviderID); sched != nil {
+			need := scheduler.EstimateNeedGB(dec.Model.UpstreamID, dec.Model.Params)
+			qmax := rs.LocalQueueMax
+			waitMS, rel, aerr := sched.Acquire(ctx, dec.Model.UpstreamID, need, qmax)
+			if errors.Is(aerr, scheduler.ErrOverflow) {
+				if rs.LocalQueueRedirect && anyExtOK() {
+					extDec, eerr := router.Decide(ctx, router.DecideInput{
+						Class:       class,
+						Models:      d.Reg.Models(),
+						SessionKey:  session,
+						Sticky:      d.Sticky,
+						ForceTier:   force,
+						EscalateMin: "trivial",
+						ExternalOK:  extOK,
+					})
+					if eerr == nil && extDec.Model.CostTier == "metered" {
+						dec = extDec
+						reason = "queue_overflow_redirect"
+					} else {
+						return overflowResult(class, session, start, "queue_overflow"), nil
+					}
+				} else {
+					return overflowResult(class, session, start, "queue_overflow"), nil
+				}
+			} else if aerr != nil {
+				return nil, aerr
+			} else {
+				queueWait = waitMS
+				release = rel
+				if waitMS > 0 {
+					reason = "queued"
+				}
+			}
+		}
+	}
+
 	resp, model, dec, err := forwardChat(ctx, d, body, hdr, dec, rs.KeepAlive)
 	if err != nil {
+		if release != nil {
+			release()
+		}
 		return nil, err
 	}
 
 	// On rate limit: cooldown + one retry on best local
-	if resp != nil && resp.StatusCode == http.StatusTooManyRequests && d.Quotas != nil {
+	if resp != nil && resp.StatusCode == http.StatusTooManyRequests && d.Quotas != nil && model.CostTier == "metered" {
 		cd := time.Duration(rs.QuotaCooldownSeconds) * time.Second
 		if cd <= 0 {
 			cd = 10 * time.Minute
@@ -208,20 +267,43 @@ func ProxyChat(ctx context.Context, d Deps, body []byte, hdr http.Header) (*Chat
 			ExternalOK:  func(string) bool { return false },
 		})
 		if lerr == nil {
+			if release != nil {
+				release()
+				release = nil
+				queueWait = 0
+			}
+			if localDec.Model.CostTier == "local" && d.Schedulers != nil {
+				if sched := d.Schedulers.Get(localDec.Model.ProviderID); sched != nil {
+					need := scheduler.EstimateNeedGB(localDec.Model.UpstreamID, localDec.Model.Params)
+					waitMS, rel, aerr := sched.Acquire(ctx, localDec.Model.UpstreamID, need, rs.LocalQueueMax)
+					if aerr != nil {
+						return overflowResult(class, session, start, "queue_overflow"), nil
+					}
+					queueWait = waitMS
+					release = rel
+				}
+			}
 			resp2, model2, dec2, err2 := forwardChat(ctx, d, body, hdr, localDec, rs.KeepAlive)
 			if err2 == nil {
 				resp, model, dec = resp2, model2, dec2
+				reason = dec.Reason
 			}
 		}
 	}
 
+	if reason == "" {
+		reason = dec.Reason
+	}
+
 	res := &ChatResult{
-		Response: resp,
-		Model:    model,
-		Reason:   dec.Reason,
-		Decision: dec,
-		Class:    class,
-		Session:  session,
+		Response:    resp,
+		Model:       model,
+		Reason:      reason,
+		Decision:    dec,
+		Class:       class,
+		Session:     session,
+		QueueWaitMS: queueWait,
+		Release:     release,
 		Usage: store.UsageEvent{
 			ModelID:          model.ID(),
 			ProviderID:       model.ProviderID,
@@ -236,6 +318,29 @@ func ProxyChat(ctx context.Context, d Deps, body []byte, hdr http.Header) (*Chat
 		},
 	}
 	return res, nil
+}
+
+func overflowResult(class classifier.Result, session string, start time.Time, reason string) *ChatResult {
+	body := `{"error":{"message":"local model queue overflow","type":"local_queue_overflow"}}`
+	resp := &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+	return &ChatResult{
+		Response: resp,
+		Reason:   reason,
+		Class:    class,
+		Session:  session,
+		Usage: store.UsageEvent{
+			SessionID:  session,
+			Category:   class.Category,
+			Complexity: class.Complexity,
+			Pool:       "local · queue",
+			HTTPStatus: http.StatusTooManyRequests,
+			LatencyMS:  int(time.Since(start).Milliseconds()),
+		},
+	}
 }
 
 func forwardChat(ctx context.Context, d Deps, body []byte, hdr http.Header, dec router.DecideOutput, keepAlive string) (*http.Response, provider.ModelInfo, router.DecideOutput, error) {
@@ -264,15 +369,25 @@ func forwardChat(ctx context.Context, d Deps, body []byte, hdr http.Header, dec 
 func CopyAndRecord(w http.ResponseWriter, d Deps, res *ChatResult, stateText string) error {
 	resp := res.Response
 	defer resp.Body.Close()
+	if res.Release != nil {
+		defer res.Release()
+	}
 	for k, vs := range resp.Header {
 		for _, v := range vs {
 			w.Header().Add(k, v)
 		}
 	}
-	w.Header().Set("X-Router-Model", res.Model.ID())
-	w.Header().Set("X-Router-Provider", res.Model.ProviderID)
+	if res.Model.ID() != "" {
+		w.Header().Set("X-Router-Model", res.Model.ID())
+	}
+	if res.Model.ProviderID != "" {
+		w.Header().Set("X-Router-Provider", res.Model.ProviderID)
+	}
 	w.Header().Set("X-Router-Tier", res.Class.Complexity)
 	w.Header().Set("X-Router-Reason", res.Reason)
+	if res.QueueWaitMS > 0 {
+		w.Header().Set("X-Router-Queue-Wait-Ms", fmt.Sprintf("%d", res.QueueWaitMS))
+	}
 	w.WriteHeader(resp.StatusCode)
 
 	ct := resp.Header.Get("Content-Type")

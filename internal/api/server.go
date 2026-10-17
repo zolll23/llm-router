@@ -15,6 +15,7 @@ import (
 	"router-app/internal/provider"
 	"router-app/internal/proxy"
 	"router-app/internal/router"
+	"router-app/internal/scheduler"
 	"router-app/internal/store"
 )
 
@@ -28,6 +29,7 @@ type Server struct {
 	Benchmarks *benchmark.BenchmarkStore
 	Quotas     *provider.QuotaStore
 	Perf       *provider.PerfStore
+	Schedulers *scheduler.Registry
 }
 
 func (s *Server) classifier() classifier.Classifier {
@@ -302,6 +304,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		DB:         s.DB,
 		Quotas:     s.Quotas,
 		Perf:       s.Perf,
+		Schedulers: s.Schedulers,
 		KeepAlive:  st.KeepAlive,
 		Settings: func() proxy.RoutingSettings {
 			cur := s.Settings.Get()
@@ -312,6 +315,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 				QuotaThresholdMonthlyPct: cur.QuotaThresholdMonthlyPct,
 				QuotaCooldownSeconds:     cur.QuotaCooldownSeconds,
 				KeepAlive:                cur.KeepAlive,
+				LocalQueueMax:            cur.LocalQueueMax,
+				LocalQueueRedirect:       cur.LocalQueueRedirect,
 			}
 		},
 	}

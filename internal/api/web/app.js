@@ -380,8 +380,15 @@ async function loadSankey() {
   empty.hidden = true;
 
   const width = Math.max(wrap.clientWidth || 960, 720);
-  const height = 420;
-  const margin = { top: 16, right: 120, bottom: 16, left: 110 };
+  const height = 440;
+  const margin = { top: 36, right: 120, bottom: 16, left: 110 };
+  const stageTitles = {
+    category: "Категория",
+    complexity: "Сложность",
+    pool: "Пул",
+    model: "Модель",
+    status: "Статус",
+  };
 
   svg.attr("viewBox", `0 0 ${width} ${height}`).attr("width", "100%").attr("height", height);
 
@@ -418,6 +425,23 @@ async function loadSankey() {
   });
 
   const g = svg.append("g");
+
+  const stageX = {};
+  for (const n of graph.nodes) {
+    if (!n.stage || stageX[n.stage] != null) continue;
+    stageX[n.stage] = (n.x0 + n.x1) / 2;
+  }
+  const stageOrder = ["category", "complexity", "pool", "model", "status"];
+  g.append("g")
+    .attr("class", "sankey-stages")
+    .selectAll("text")
+    .data(stageOrder.filter((s) => stageX[s] != null))
+    .join("text")
+    .attr("class", "sankey-stage-title")
+    .attr("x", (s) => stageX[s])
+    .attr("y", 18)
+    .attr("text-anchor", "middle")
+    .text((s) => stageTitles[s] || s);
 
   g.append("g")
     .attr("fill", "none")
@@ -744,6 +768,8 @@ async function loadSettings() {
   form.quota_threshold_weekly_pct.value = st.quota_threshold_weekly_pct ?? 90;
   form.quota_threshold_monthly_pct.value = st.quota_threshold_monthly_pct ?? 95;
   form.quota_cooldown_seconds.value = st.quota_cooldown_seconds ?? 600;
+  form.local_queue_max.value = st.local_queue_max ?? 8;
+  form.local_queue_redirect.checked = !!st.local_queue_redirect;
   const inv = await api("/api/inventory");
   document.getElementById("inventory").textContent = JSON.stringify(inv, null, 2);
 }
@@ -764,6 +790,8 @@ document.getElementById("settings-form").addEventListener("submit", async (e) =>
     quota_threshold_weekly_pct: Number(f.quota_threshold_weekly_pct.value || 90),
     quota_threshold_monthly_pct: Number(f.quota_threshold_monthly_pct.value || 95),
     quota_cooldown_seconds: Number(f.quota_cooldown_seconds.value || 600),
+    local_queue_max: Number(f.local_queue_max.value ?? 8),
+    local_queue_redirect: !!f.local_queue_redirect.checked,
   };
   await api("/api/settings", { method: "PUT", body: JSON.stringify(body) });
   await loadSettings();

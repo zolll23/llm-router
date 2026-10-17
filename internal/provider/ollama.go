@@ -27,6 +27,9 @@ func NewOllama(id, baseURL string) *Ollama {
 
 func (o *Ollama) ID() string { return o.id }
 
+// BaseURL returns the Ollama HTTP root (no trailing slash).
+func (o *Ollama) BaseURL() string { return o.baseURL }
+
 type ollamaTagsResponse struct {
 	Models []struct {
 		Name string `json:"name"`

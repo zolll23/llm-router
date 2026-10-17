@@ -176,6 +176,16 @@
           <label class="form-label">Пауза после 429 (сек)</label>
           <input name="quota_cooldown_seconds" class="form-control" type="number" />
         </div>
+        <hr class="my-3" />
+        <h3 class="section-subtitle">Очередь локальной Ollama</h3>
+        <div class="mb-3">
+          <label class="form-label">Длина очереди (ожидающие)</label>
+          <input name="local_queue_max" class="form-control" type="number" min="0" />
+        </div>
+        <div class="form-check mb-3">
+          <input name="local_queue_redirect" class="form-check-input" type="checkbox" id="local_queue_redirect" />
+          <label class="form-check-label" for="local_queue_redirect">Редирект наружу при переполнении (иначе 429)</label>
+        </div>
         <button type="submit" class="btn btn-accent">Сохранить</button>
       </form>
       <h3 class="section-subtitle">Inventory</h3>

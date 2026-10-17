@@ -21,6 +21,9 @@ type RuntimeSettings struct {
 	QuotaThresholdWeeklyPct   float64 `json:"quota_threshold_weekly_pct"`
 	QuotaThresholdMonthlyPct  float64 `json:"quota_threshold_monthly_pct"`
 	QuotaCooldownSeconds      int     `json:"quota_cooldown_seconds"`
+
+	LocalQueueMax      int  `json:"local_queue_max"`
+	LocalQueueRedirect bool `json:"local_queue_redirect"`
 }
 
 type SettingsStore struct {
@@ -43,6 +46,8 @@ func defaultSettings() RuntimeSettings {
 		QuotaThresholdWeeklyPct:   90,
 		QuotaThresholdMonthlyPct:  95,
 		QuotaCooldownSeconds:      600,
+		LocalQueueMax:             8,
+		LocalQueueRedirect:        false,
 	}
 }
 
@@ -82,6 +87,9 @@ func (s *SettingsStore) fillEscalationDefaults() {
 	}
 	if s.cur.QuotaCooldownSeconds <= 0 {
 		s.cur.QuotaCooldownSeconds = d.QuotaCooldownSeconds
+	}
+	if s.cur.LocalQueueMax < 0 {
+		s.cur.LocalQueueMax = d.LocalQueueMax
 	}
 }
 
