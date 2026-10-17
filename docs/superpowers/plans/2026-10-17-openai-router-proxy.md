@@ -2,39 +2,23 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Go OpenAI-compatible proxy that OpenCode can select as model `router/auto`, classifies requests (Nimble via Ollama, later GLiNER), routes local-first with quota/limits + sticky sessions, tracks usage, and exposes a small web UI.
+**Goal:** Ship a Go OpenAI-compatible router proxy that OpenCode selects as `auto`, discovers models from configured providers (namespaced IDs), classifies with Nimble, routes local-first with sticky sessions, and exposes Usage/Settings/Quality UI per the design spec.
 
-**Architecture:** Single Go binary: HTTP API (`/v1/*` + `/api/*` + embedded UI) → Inventory → Classifier → Scorer → StickyStore → UpstreamProxy (SSE) → SQLite usage + routing eval store. Periodic EvalWorker (AI-judge via Nimble/clef or cheap LLM) builds confusion matrices, underkill/overkill stats, and fine-tune JSONL candidates. Backends: Ollama local/cloud and OpenAI-compatible URLs from config / `opencode.json`.
+**Architecture:** Single binary: HTTP API → Inventory (provider adapters) → Classifier → Scorer → Sticky → Upstream proxy → SQLite usage/eval. Virtual model `auto`. Spec: `docs/superpowers/specs/2026-10-17-openai-router-proxy-design.md`.
 
-**Tech Stack:** Go 1.22+, `net/http` or chi, modernc.org/sqlite, embed.FS for UI, Ollama `/v1/systemone` for Nimble (classifier + cheap judge).
-
-**Research basis:** `~/Documents/Go_OpenAI_Router_Proxy_Research_20261017/`
+**Tech Stack:** Go 1.22+, stdlib `net/http`, `gopkg.in/yaml.v3`, `modernc.org/sqlite`, `embed` for UI.
 
 ## Global Constraints
 
-- OpenAI-compatible surface for OpenCode: primarily `POST /v1/chat/completions` + `GET /v1/models` + SSE streaming.
-- Do **not** implement `/v1/completions`, `/v1/embeddings`, `/v1/responses` in MVP (see Endpoint Policy below).
-- Classifier default: Nimble via Ollama `POST /v1/systemone` (Ollama ≥ 0.35).
-- Local-first for simple requests; sticky session to preserve Ollama KV reuse.
-- Always inject `stream_options.include_usage` on upstream streamed requests.
-- Russian UI labels OK; code/comments in English.
-- Single-user desktop first (SQLite, no Redis required).
-
-## Endpoint Policy
-
-| Endpoint | MVP | Later | Why |
-|----------|-----|-------|-----|
-| `GET /v1/models` | **Yes** | — | OpenCode picker / some providers require IDs to match |
-| `POST /v1/chat/completions` | **Yes** | — | OpenCode `@ai-sdk/openai-compatible` path |
-| `GET /health` | **Yes** | — | Ops |
-| `GET/PUT /api/settings` | **Yes** | — | Classifier choice |
-| `GET /api/stats/*` | **Yes** | — | Usage UI |
-| `GET /api/inventory` | **Yes** | — | Debug backends |
-| `POST /v1/completions` | No | Only if a client needs legacy Completions | OpenCode does not use it |
-| `POST /v1/embeddings` | No | Only for semantic cache / RAG | Not needed for agent routing |
-| `POST /v1/responses` | No | If OpenCode points `@ai-sdk/openai` Responses models through this proxy | Different package/path; out of MVP |
-
-**Rule:** Implement new `/v1/*` only when a real client in the inventory requires it. Prefer chat completions + transparent proxy headers.
+- OpenAI surface v1: only `/v1/models` + `/v1/chat/completions` + `/health` (no completions/embeddings/responses).
+- Canonical backend ID: `provider_id/upstream_id` — never merge stats across providers.
+- Default listen `127.0.0.1:8080`; non-loopback requires token.
+- Classifier default: Nimble via Ollama `/v1/systemone`; heuristic fallback.
+- Always inject `stream_options.include_usage` on streamed upstream requests.
+- UI Russian; code/config English.
+- SQLite under `data_dir` (default `~/.local/share/router`).
+- TDD: failing test → implement → pass → commit per task.
+- YAGNI: Cursor chat routing and AI-judge are later tasks; discover-only Cursor first.
 
 ---
 
@@ -43,32 +27,34 @@
 ```
 cmd/router/main.go
 internal/config/config.go
-internal/api/server.go          # route mount
-internal/api/openai_models.go
-internal/api/openai_chat.go     # chat + SSE
-internal/api/admin_settings.go
-internal/api/admin_stats.go
-internal/inventory/ollama.go
-internal/inventory/opencode.go
-internal/inventory/merge.go
+internal/config/config_test.go
+internal/provider/provider.go          # Provider interface, ModelInfo, CanonicalID
+internal/provider/registry.go          # Inventory sync
+internal/provider/ollama.go
+internal/provider/openai_compat.go
+internal/provider/opencode_config.go
+internal/provider/cursor_cli.go
+internal/provider/canonical_test.go
 internal/classifier/classifier.go
 internal/classifier/nimble.go
-internal/classifier/heuristic.go  # fallback
+internal/classifier/heuristic.go
+internal/classifier/nimble_test.go
+internal/router/decide.go
 internal/router/scorer.go
 internal/router/sticky.go
-internal/router/decide.go
-internal/proxy/upstream.go        # reverse proxy + usage harvest
-internal/usage/store.go           # SQLite
-internal/usage/aggregate.go
-internal/eval/store.go            # routing_events, judge_labels, matrices
-internal/eval/signals.go          # online outcome signals
-internal/eval/judge.go            # Nimble/LLM-as-judge
-internal/eval/scheduler.go        # periodic analysis jobs
-internal/eval/export_finetune.go  # GLiNER JSONL export
-web/                              # embed UI
-  index.html
-  app.js
-  styles.css
+internal/router/decide_test.go
+internal/proxy/chat.go                 # SSE + usage harvest hooks
+internal/store/db.go
+internal/store/usage.go
+internal/store/routing.go
+internal/api/server.go
+internal/api/auth.go
+internal/api/openai.go
+internal/api/admin.go
+internal/api/openai_test.go
+web/index.html
+web/app.js
+web/styles.css
 configs/config.example.yaml
 go.mod
 README.md
@@ -76,236 +62,471 @@ README.md
 
 ---
 
-## Phase 0 — Skeleton
+### Task 1: Module bootstrap + health
 
-### Task 0: Module + hello server
+**Files:**
+- Create: `go.mod`, `cmd/router/main.go`, `internal/config/config.go`, `internal/config/config_test.go`, `configs/config.example.yaml`, `README.md`
 
-- [ ] `go mod init` (module path e.g. `github.com/pahomov/router` or local module name)
-- [ ] `cmd/router/main.go` listens `:8080`, `GET /health` → `{"ok":true}`
-- [ ] Example `configs/config.example.yaml` with `listen`, `ollama_base`, `virtual_model: auto`
-- [ ] Manual: `curl localhost:8080/health`
-- [ ] Commit: `chore: bootstrap router module and health endpoint`
+**Interfaces:**
+- Produces: `config.Load(path string) (*Config, error)` with fields `Listen`, `DataDir`, `VirtualModel`, `AdminToken`, `APIToken`, `Providers []ProviderConfig`
 
----
+- [ ] **Step 1: Write failing test for default config**
 
-## Phase 1 — OpenAI chat proxy (unblocks OpenCode)
+```go
+// internal/config/config_test.go
+package config_test
 
-### Task 1: `GET /v1/models`
+import (
+	"os"
+	"path/filepath"
+	"testing"
 
-- [ ] Return virtual model `auto` (and optional passthrough of discovered Ollama models later)
-- [ ] Shape: OpenAI `{object:"list", data:[{id, object:"model", owned_by:"router"}]}`
-- [ ] Test: table test on JSON shape
-- [ ] Commit: `feat: expose virtual model via /v1/models`
+	"router/internal/config"
+)
 
-### Task 2: Naive proxy `POST /v1/chat/completions`
-
-- [ ] Parse body; if `model == auto` (or configured virtual id), rewrite to default upstream Ollama model from config
-- [ ] Forward to `{ollama}/v1/chat/completions` with streaming passthrough
-- [ ] Non-stream: buffer + return JSON
-- [ ] Inject `stream_options.include_usage=true` when `stream=true`
-- [ ] Manual: OpenCode provider pointed at `http://127.0.0.1:8080/v1` with model `auto`
-- [ ] Commit: `feat: proxy chat completions to Ollama`
-
-### Task 3: OpenCode config snippet in README
-
-- [ ] Document v1-style `provider.router` + `baseURL` + model `auto` with `tools: true`, context ≥ 64k
-- [ ] Commit: `docs: OpenCode integration snippet`
-
----
-
-## Phase 2 — Classification + local-first routing
-
-### Task 4: Inventory from Ollama
-
-- [ ] Poll `GET {ollama}/api/tags` on interval; mark `:cloud` vs local
-- [ ] Store `Backend{ID, Source, Caps, Healthy}`
-- [ ] `GET /api/inventory` for debug
-- [ ] Commit: `feat: ollama model inventory`
-
-### Task 5: Nimble classifier
-
-- [ ] `NimbleClassifier` → `POST {ollama}/v1/systemone` with questions: complexity (score), needs_tools (noul)
-- [ ] Map answers → `ClassResult{Complexity, NeedsTools, Confidence}`
-- [ ] Heuristic fallback if Nimble down / low confidence
-- [ ] Unit test with httptest mock
-- [ ] Commit: `feat: nimble classifier via systemone`
-
-### Task 6: Scorer + decide
-
-- [ ] Filter backends by tools/context constraints
-- [ ] Prefer `local` when complexity ≤ simple
-- [ ] Else cloud_included / paid per config tags
-- [ ] Response headers: `X-Router-Model`, `X-Router-Tier`, `X-Router-Reason`
-- [ ] Commit: `feat: local-first scoring and routing decision`
-
-### Task 7: Sticky sessions
-
-- [ ] Derive `session_id` from hash(system prompt prefix + optional client header `X-Router-Session`)
-- [ ] Pin backend for TTL (default 30m); skip full reclassify unless TTL/error/hard task change
-- [ ] Set `keep_alive` on Ollama upstream for pinned model
-- [ ] Commit: `feat: sticky routing for KV affinity`
-
----
-
-## Phase 3 — Usage + Web UI
-
-### Task 8: SQLite usage store
-
-- [ ] Schema `usage_events` (ts, model, prompt/cached/completion tokens, latency_ms, session_id, classifier_json)
-- [ ] Harvest usage from non-stream JSON and final SSE usage chunk
-- [ ] Missing cached_tokens → 0
-- [ ] Commit: `feat: sqlite usage accounting`
-
-### Task 9: Stats API
-
-- [ ] `GET /api/stats/overview` → per model × day/week/month × {prompt, cached, completion, reqs, share%}
-- [ ] `GET /api/stats/models/{id}` → timeseries + latency p50/p75/p90/p95
-- [ ] Commit: `feat: stats aggregation API`
-
-### Task 10: Web UI
-
-- [ ] Embed `web/`: overview table, model detail charts, Settings tab (classifier model, thresholds)
-- [ ] `GET /` serves UI; `GET/PUT /api/settings`
-- [ ] Commit: `feat: embedded usage and settings UI`
-
----
-
-## Phase 4 — Hardening
-
-### Task 11: Parse `opencode.json` backends (optional inventory)
-
-- [ ] Read `~/.config/opencode/opencode.json` (+ project config if present)
-- [ ] Merge OpenAI-compatible providers as tagged backends
-- [ ] Commit: `feat: inventury from opencode config`
-
-### Task 12: Limits / concurrency awareness
-
-- [ ] Config: per-backend rpm/concurrent + optional Ollama cloud credit headroom (manual or poll usage API later)
-- [ ] Scorer penalties when saturated; fail-open to local
-- [ ] Commit: `feat: quota-aware scoring`
-
-### Task 13: GLiNER sidecar adapter (optional)
-
-- [ ] `Classifier` interface already pluggable; HTTP client to sidecar `/classify`
-- [ ] Settings UI switch nimble|gliner|heuristic
-- [ ] Commit: `feat: gliner classifier backend`
-
-### Task 14: Exact response cache (opt-in, off for tools)
-
-- [ ] Hash full request; skip if `tools` present
-- [ ] Header `X-Router-Cache: exact`
-- [ ] Commit: `feat: optional exact response cache`
-
----
-
-## Phase 5 — Automated routing quality eval (feedback loop)
-
-Goal: continuously collect classification outcomes, periodically label with a cheap AI-judge, show confusion matrix / underkill-overkill, and export fine-tune data for GLiNER (or Nimble criteria tuning).
-
-### Online signals (every routed request — free)
-
-On each `/v1/chat/completions` after classify+proxy, append `routing_events`:
-
-```
-id, ts, session_id, request_id
-state_text          -- truncated user(+signals), redacted if needed
-pred_complexity     -- simple|medium|hard (or label set)
-pred_needs_tools
-pred_confidence
-chosen_model, cost_tier
-prompt_tokens, completion_tokens, cached_tokens, latency_ms
-http_status, tool_calls_in_req, tool_error   -- if detectable
-outcome_flags JSON  -- filled async: escalated, sticky_break, user_override
+func TestLoadDefaults(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("providers: []\n"), 0o644); err != nil {
+		t.fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Listen != "127.0.0.1:8080" {
+		t.Fatalf("listen: %q", cfg.Listen)
+	}
+	if cfg.VirtualModel != "auto" {
+		t.Fatalf("virtual: %q", cfg.VirtualModel)
+	}
+}
 ```
 
-Same-session updates (async, no blocking response path):
+- [ ] **Step 2: Run test — expect FAIL**
 
-- **escalated**: within TTL, next turn routed to strictly stronger tier after tool_fail / 5xx / empty tool args
-- **sticky_break**: session pin changed for non-TTL reason
-- **user_override**: request carried `X-Router-Tier` / forced model
-- **local_success**: pred=simple|medium, local backend, no escalate for N following turns
+Run: `cd /Users/pahomov/work/router && go test ./internal/config/ -v`  
+Expected: fail (package/module missing)
 
-### Periodic AI-judge job
+- [ ] **Step 3: Implement minimal config + main**
 
-- [ ] Config: `eval.schedule` cron-like (default daily) or interval (`6h`), `eval.sample_rate`, `eval.max_per_run`, `eval.judge_model` (`nimble`|`clef-flash`|chat model)
-- [ ] Sample priority queue (not uniform): escalated > low-confidence > random paid-on-simple > random local-on-hard
-- [ ] Judge via `/v1/systemone` (preferred, cheap typed):
+```go
+// go.mod
+module router
 
-```
-state: { user_text, tools_present, approx_tokens, chosen_tier, outcome_flags }
-questions:
-  gold_complexity: choice [trivial, simple, medium, hard]
-  adequate_model: noul "Was chosen tier sufficient without being wasteful?"
-  underkill: noul
-  overkill: noul
+go 1.22
+
+require gopkg.in/yaml.v3 v3.0.1
 ```
 
-- [ ] Persist `judge_labels(request_id, gold_*, judge_conf, judge_model, judged_at)`
-- [ ] Optional second pass: only disagreements (pred ≠ gold) → stronger judge / human review queue file
-- [ ] Never block chat path; job runs in background goroutine / `router eval run`
+```go
+// internal/config/config.go
+package config
 
-### Aggregates & confusion matrix
+import (
+	"os"
+	"path/filepath"
 
-- [ ] `GET /api/eval/summary?from=&to=` → counts pred vs gold, underkill%, overkill%, ECE buckets, local_share
-- [ ] `GET /api/eval/confusion?label=complexity` → matrix `pred × gold` (+ row/col normalized)
-- [ ] `GET /api/eval/calibration` → confidence histogram vs accuracy
-- [ ] UI tab **«Качество»**: matrix heatmap, underkill/overkill trend, top disagreement examples
-- [ ] Commit: `feat: routing eval store, judge job, confusion API`
+	"gopkg.in/yaml.v3"
+)
 
-### Fine-tune export (GLiNER loop)
+type ProviderConfig struct {
+	ID         string `yaml:"id"`
+	Type       string `yaml:"type"`
+	BaseURL    string `yaml:"base_url"`
+	APIKeyEnv  string `yaml:"api_key_env"`
+	ConfigPath string `yaml:"config_path"`
+	Command    string `yaml:"command"`
+}
 
-- [ ] `POST /api/eval/export-finetune` or CLI `router eval export --format gliner2`
-- [ ] Emit JSONL rows:
+type Config struct {
+	Listen       string           `yaml:"listen"`
+	DataDir      string           `yaml:"data_dir"`
+	VirtualModel string           `yaml:"virtual_model"`
+	AdminToken   string           `yaml:"admin_token"`
+	APIToken     string           `yaml:"api_token"`
+	Providers    []ProviderConfig `yaml:"providers"`
+}
 
-```json
-{"input":"...","output":{"classifications":[{"task":"complexity","labels":["trivial","simple","medium","hard"],"true_label":["simple"]}]}}
+func Load(path string) (*Config, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	cfg := &Config{
+		Listen:       "127.0.0.1:8080",
+		VirtualModel: "auto",
+		DataDir:      filepath.Join(os.Getenv("HOME"), ".local/share/router"),
+	}
+	if err := yaml.Unmarshal(b, cfg); err != nil {
+		return nil, err
+	}
+	if cfg.Listen == "" {
+		cfg.Listen = "127.0.0.1:8080"
+	}
+	if cfg.VirtualModel == "" {
+		cfg.VirtualModel = "auto"
+	}
+	return cfg, nil
+}
 ```
 
-- [ ] Filters: only `judge_conf ≥ τ` or human-approved; exclude PII-flagged; dedupe near-identical inputs
-- [ ] Write to `data/finetune/YYYYMMDD.jsonl` + report of class balance
-- [ ] Document manual step: `gliner2` train → reload sidecar; router settings point to new adapter path
-- [ ] Commit: `feat: export gliner fine-tune jsonl from judged events`
+```go
+// cmd/router/main.go
+package main
 
-### Task checklist
+import (
+	"encoding/json"
+	"flag"
+	"log"
+	"net/http"
 
-- [ ] Schema migration: `routing_events`, `judge_labels`
-- [ ] Wire online signal writers into chat handler + session tracker
-- [ ] Implement `EvalScheduler` + Nimble judge
-- [ ] Confusion / summary APIs + UI tab
-- [ ] Fine-tune export
-- [ ] Config knobs + README “quality loop”
-- [ ] Test: fixture events → judge mock → matrix counts deterministic
+	"router/internal/config"
+)
+
+func main() {
+	cfgPath := flag.String("config", "configs/config.example.yaml", "config path")
+	flag.Parse()
+	cfg, err := config.Load(*cfgPath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+	})
+	log.Printf("listening on %s", cfg.Listen)
+	log.Fatal(http.ListenAndServe(cfg.Listen, mux))
+}
+```
+
+- [ ] **Step 4: Run tests — expect PASS**
+
+Run: `go mod tidy && go test ./internal/config/ -v`  
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add go.mod go.sum cmd/ internal/config/ configs/config.example.yaml README.md
+git commit -m "feat: bootstrap router config and health endpoint"
+```
 
 ---
 
-## Out of scope (explicit)
+### Task 2: Canonical IDs + Provider interface
 
-- Cross-model KV transfer / learned mappers
-- Semantic response cache for agent traffic
-- `/v1/completions`, `/v1/embeddings`, `/v1/responses` until a client requires them
-- Multi-tenant auth / Redis cluster
-- Fully automatic GLiNER retrain+deploy without human gate (export + review only)
+**Files:**
+- Create: `internal/provider/provider.go`, `internal/provider/canonical_test.go`
+
+**Interfaces:**
+- Produces:
+  - `type ModelInfo struct { ProviderID, UpstreamID, DisplayName string; Routable bool; Tools, Vision bool; Context int; CostTier string }`
+  - `func CanonicalID(providerID, upstreamID string) string`
+  - `type Provider interface { ID() string; ListModels(ctx context.Context) ([]ModelInfo, error); ChatCompletions(ctx context.Context, rawBody []byte, hdr http.Header) (*http.Response, error) }`
+  - ChatCompletions may return `ErrNotRoutable`
+
+- [ ] **Step 1: Failing test**
+
+```go
+func TestCanonicalID(t *testing.T) {
+	got := provider.CanonicalID("ollama", "qwen3-coder")
+	if got != "ollama/qwen3-coder" {
+		t.Fatalf("got %q", got)
+	}
+}
+```
+
+- [ ] **Step 2: Run — FAIL**
+
+Run: `go test ./internal/provider/ -v`
+
+- [ ] **Step 3: Implement `provider.go`**
+
+```go
+package provider
+
+import (
+	"context"
+	"errors"
+	"net/http"
+)
+
+var ErrNotRoutable = errors.New("provider cannot chat")
+
+type ModelInfo struct {
+	ProviderID  string
+	UpstreamID  string
+	DisplayName string
+	Routable    bool
+	Tools       bool
+	Vision      bool
+	Context     int
+	CostTier    string // local | metered | unknown
+}
+
+func CanonicalID(providerID, upstreamID string) string {
+	return providerID + "/" + upstreamID
+}
+
+func (m ModelInfo) ID() string { return CanonicalID(m.ProviderID, m.UpstreamID) }
+
+type Provider interface {
+	ID() string
+	ListModels(ctx context.Context) ([]ModelInfo, error)
+	ChatCompletions(ctx context.Context, rawBody []byte, hdr http.Header) (*http.Response, error)
+}
+```
+
+- [ ] **Step 4: PASS + Commit**
+
+```bash
+git commit -m "feat: provider interface and canonical model IDs"
+```
 
 ---
 
-## Suggested milestone order (calendar)
+### Task 3: Ollama adapter ListModels + Chat
 
-| Milestone | Deliverable | ~Time |
-|-----------|-------------|-------|
-| M1 | Chat proxy + OpenCode works with fixed upstream | 1–2 d |
-| M2 | Nimble + local-first + sticky | 2–3 d |
-| M3 | Usage SQLite + overview UI | 2 d |
-| M4 | Settings + detail charts + opencode inventory | 2–3 d |
-| M5 | Quotas + GLiNER + exact cache | as needed |
-| M6 | Eval loop: signals + AI-judge + confusion matrix + finetune export | 2–3 d |
+**Files:**
+- Create: `internal/provider/ollama.go`, `internal/provider/ollama_test.go`
+
+**Interfaces:**
+- Consumes: `Provider`, `ModelInfo`
+- Produces: `func NewOllama(id, baseURL string) *Ollama`
+
+- [ ] **Step 1: httptest test for ListModels parsing `{"models":[{"name":"llama3.2"}]}` → `ollama/llama3.2`, CostTier local, Routable true**
+
+- [ ] **Step 2: FAIL then implement ListModels via `GET {base}/api/tags` and Chat via `POST {base}/v1/chat/completions` (forward body after rewriting model field to upstream id)**
+
+- [ ] **Step 3: PASS + commit** `feat: ollama provider adapter`
 
 ---
 
-## Verification (per milestone)
+### Task 4: Registry sync + GET /api/inventory + GET /v1/models
 
-- M1: OpenCode chat + tools against `router/auto`
-- M2: simple prompt → local model header; hard prompt → larger/cloud; sticky keeps model
-- M3: after N requests, overview numbers match harvested usage
-- M4: settings change classifier without restart
-- M5: tools requests never hit exact cache
-- M6: after synthetic underkill (force weak model then escalate), event flagged; judge job fills gold; confusion API non-empty; export JSONL valid for gliner2
+**Files:**
+- Create: `internal/provider/registry.go`, `internal/api/server.go`, `internal/api/openai.go`, `internal/api/openai_test.go`
+- Modify: `cmd/router/main.go`
+
+**Interfaces:**
+- Produces: `type Registry struct`; `func (r *Registry) Sync(ctx) error`; `func (r *Registry) Models() []ModelInfo`; `func (r *Registry) Get(canonicalID string) (ModelInfo, Provider, bool)`
+
+- [ ] **Step 1: Test `/v1/models` returns virtual `auto` plus synced ollama models with ids `provider/name`**
+
+- [ ] **Step 2: Implement Registry + wire mux; background sync every 60s**
+
+- [ ] **Step 3: PASS + commit** `feat: inventory registry and /v1/models`
+
+---
+
+### Task 5: Naive chat proxy for `auto` → first local routable model
+
+**Files:**
+- Create: `internal/proxy/chat.go`, `internal/proxy/chat_test.go`
+- Modify: `internal/api/openai.go`
+
+**Interfaces:**
+- Produces: `func ProxyChat(ctx, reg, virtualModel, body []byte, hdr) (*http.Response, chosen ModelInfo, error)` — for this task always pick first `Routable && CostTier==local` else first routable
+
+- [ ] **Step 1: httptest upstream receives rewritten model name; client gets 200 JSON**
+
+- [ ] **Step 2: Implement non-stream proxy first; pass through status/body; set `X-Router-Model`**
+
+- [ ] **Step 3: PASS + commit** `feat: proxy chat completions to upstream`
+
+---
+
+### Task 6: SSE streaming + include_usage injection
+
+**Files:**
+- Modify: `internal/proxy/chat.go`, tests
+
+- [ ] **Step 1: Test that when request JSON has `"stream":true`, outbound body includes `stream_options.include_usage=true`**
+
+- [ ] **Step 2: Implement JSON patch + `io.Copy` of response body with `Content-Type` flush for SSE**
+
+- [ ] **Step 3: Commit** `feat: sse passthrough with usage injection`
+
+---
+
+### Task 7: Nimble classifier + heuristic fallback
+
+**Files:**
+- Create: `internal/classifier/*.go` + tests
+
+**Interfaces:**
+- Produces:
+```go
+type Result struct {
+	Complexity string  // trivial|simple|medium|hard
+	NeedsTools bool
+	Confidence float64
+	Source     string  // nimble|heuristic
+}
+type Classifier interface {
+	Classify(ctx context.Context, in Input) (Result, error)
+}
+type Input struct {
+	UserText      string
+	ToolsPresent  bool
+	ApproxTokens  int
+	MessageCount  int
+}
+```
+
+- [ ] **Step 1: Mock systemone JSON → Complexity medium**
+
+- [ ] **Step 2: Implement Nimble client `POST {ollama}/v1/systemone`; heuristic on error**
+
+- [ ] **Step 3: Commit** `feat: nimble classifier with heuristic fallback`
+
+---
+
+### Task 8: Scorer + sticky + decide
+
+**Files:**
+- Create: `internal/router/scorer.go`, `sticky.go`, `decide.go`, `decide_test.go`
+
+**Interfaces:**
+```go
+func Decide(ctx context.Context, in DecideInput) (DecideOutput, error)
+type DecideInput struct {
+	Class      classifier.Result
+	Models     []provider.ModelInfo
+	SessionKey string
+	Sticky     *StickyStore
+	Now        time.Time
+}
+type DecideOutput struct {
+	Model  provider.ModelInfo
+	Reason string
+}
+```
+
+- [ ] **Step 1: Test simple+local preferred; sticky returns same model on second Decide**
+
+- [ ] **Step 2: Implement filter routable → score local-first → sticky TTL 30m**
+
+- [ ] **Step 3: Wire into ProxyChat; commit** `feat: local-first scoring and sticky sessions`
+
+---
+
+### Task 9: SQLite usage + harvest
+
+**Files:**
+- Create: `internal/store/db.go`, `usage.go`, tests
+- Modify: `proxy/chat.go` to record events (parse usage from JSON or last SSE chunk)
+
+- [ ] **Step 1: Test Insert + Overview aggregates for one model day window**
+
+- [ ] **Step 2: Schema `usage_events`; Overview API handler**
+
+- [ ] **Step 3: Commit** `feat: sqlite usage accounting`
+
+---
+
+### Task 10: OpenAI-compatible + OpenCode + Cursor list adapters
+
+**Files:**
+- Create: `openai_compat.go`, `opencode_config.go`, `cursor_cli.go` + tests
+- Cursor: ListModels via `exec.CommandContext(command, "--list-models")`; Chat returns `ErrNotRoutable`
+
+- [ ] **Step 1: Unit tests with fake HTTP / fake command output**
+
+- [ ] **Step 2: Implement; factory `provider.NewFromConfig(ProviderConfig)`**
+
+- [ ] **Step 3: Commit** `feat: openai, opencode, and cursor inventory adapters`
+
+---
+
+### Task 11: Auth for non-loopback
+
+**Files:**
+- Create: `internal/api/auth.go`, test
+
+- [ ] **Step 1: Test loopback skips auth; 0.0.0.0 requires Bearer**
+
+- [ ] **Step 2: Middleware; commit** `feat: token auth when not binding loopback`
+
+---
+
+### Task 12: Embedded Usage + Settings + Quality (online) UI
+
+**Files:**
+- Create: `web/*`, `internal/api/admin.go`, embed in `server.go`
+
+- [ ] **Step 1: Manual checklist — three tabs load; overview JSON renders; settings PUT persists YAML or settings table**
+
+- [ ] **Step 2: Minimal vanilla JS UI (Russian labels); Quality shows escalation/local share from `routing_events`**
+
+- [ ] **Step 3: Commit** `feat: embedded usage settings and quality UI`
+
+---
+
+### Task 13: routing_events online signals
+
+**Files:**
+- Modify: store + decide/proxy to set escalated/sticky_break/user_override/local_success
+
+- [ ] **Step 1: Test escalation flag when session upgrades tier after tool failure**
+
+- [ ] **Step 2: Implement; commit** `feat: online routing quality signals`
+
+---
+
+### Task 14: AI-judge job + confusion + GLiNER export (phase 2)
+
+**Files:**
+- Create: `internal/eval/judge.go`, `scheduler.go`, `export.go`, admin routes
+
+- [ ] **Step 1: Mock judge labels → confusion matrix 2x2**
+
+- [ ] **Step 2: Periodic sampler; export JSONL path under `data_dir/finetune/`**
+
+- [ ] **Step 3: Commit** `feat: ai-judge eval loop and finetune export`
+
+---
+
+### Task 15: README OpenCode snippet + example config
+
+**Files:**
+- Modify: `README.md`, `configs/config.example.yaml`
+
+- [ ] Document OpenCode provider block pointing at `http://127.0.0.1:8080/v1`, model `auto`, tools true, context 128000
+
+- [ ] Commit: `docs: OpenCode integration and example config`
+
+---
+
+## Spec coverage check
+
+| Spec section | Tasks |
+|--------------|-------|
+| §3 Architecture | 1–8 |
+| §4 Providers / namespaced IDs | 2–4, 10 |
+| §5 Pipeline classify/score/sticky | 7–8 |
+| §6 SQLite usage | 9, 13 |
+| §7 Quality phase1/2 | 12–14 |
+| §8 UI/security | 11–12 |
+| §9 API surface | 4–6, 9, 12 |
+| Cursor discover-only then probe | 10, (14 optional chat later) |
+| No completions/embeddings/responses | Global constraint |
+
+## Placeholder scan
+
+None intentional; Task 12 UI is behavioral checklist + minimal JS rather than full CSS dump — implementer writes lean vanilla UI matching spec tabs.
+
+---
+
+## Execution
+
+Plan saved to `docs/superpowers/plans/2026-10-17-openai-router-proxy.md`.
+
+**Two execution options:**
+
+1. **Subagent-Driven (recommended)** — fresh subagent per task, review between tasks  
+2. **Inline Execution** — this session with executing-plans checkpoints  
+
+Given your «приступай», defaulting to **Inline Execution** unless you say otherwise.
